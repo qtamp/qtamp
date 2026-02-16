@@ -28,8 +28,11 @@
 #  include <QAudioBufferOutput>
 #  include <QAudioOutput>
 #  include <QImage>
+#  include <QInputDialog>
 #  include <QKeyEvent>
 #  include <QMediaPlayer>
+#  include <QMenu>
+#  include <QMessageBox>
 #  include <QMouseEvent>
 #  include <QUrl>
 #  include <QWindow>
@@ -218,6 +221,14 @@ public:
 
 protected:
     void mousePressEvent(QMouseEvent *e) override {
+        if (e->button() == Qt::RightButton) {
+            // Right-click → Winamp-style context menu.  Ported
+            // from winamp-linux's WinampWindow::showContextMenu
+            // (original author: 3nd3r <lord3nd3r@gmail.com>) and
+            // adapted to qtamp's WasabiQt::Host transport surface.
+            showContextMenu(e->globalPosition().toPoint());
+            return;
+        }
         if (e->button() == Qt::LeftButton) {
             const QPoint p = e->position().toPoint();
             QRect hitBbox;
@@ -292,6 +303,135 @@ protected:
     }
 
 private:
+    // Winamp-style right-click context menu.  Ported from
+    // winamp-linux's WinampWindow::showContextMenu (original
+    // author: 3nd3r <lord3nd3r@gmail.com>); items that don't yet
+    // have a backend in qtamp (preferences dialog, equalizer
+    // window, playlist window, video, media library, milkdrop,
+    // recent files, bookmarks) are intentionally elided or left
+    // disabled — they'll wire up later as those subsystems land.
+    // Items that map onto qtamp's host surface (transport,
+    // jump-to-time, exit, theme) are fully functional.
+    void showContextMenu(QPoint globalPos) {
+        static const char *menuStyle =
+            "QMenu { background-color: #2b2d3d; color: #00ff00; "
+                    "border: 1px solid #555; font-size: 9pt; }"
+            "QMenu::item:selected { background-color: #0000c6; }"
+            "QMenu::item:checked { font-weight: bold; }"
+            "QMenu::item:disabled { color: #666; }"
+            "QMenu::separator { height: 1px; background: #555; "
+                              "margin: 2px 4px; }";
+
+        QMenu menu;
+        menu.setStyleSheet(menuStyle);
+
+        // -- Play submenu --
+        QMenu *playMenu = menu.addMenu(tr("Play"));
+        playMenu->setStyleSheet(menuStyle);
+        QAction *playFileAct = playMenu->addAction(tr("Play file...\tL"));
+        QAction *playLocAct  = playMenu->addAction(tr("Play location...\tCtrl+L"));
+        playLocAct->setEnabled(false);  // no URL pick UI yet
+
+        menu.addSeparator();
+
+        // -- Options submenu --
+        QMenu *optMenu = menu.addMenu(tr("Options"));
+        optMenu->setStyleSheet(menuStyle);
+        QAction *aotAct = optMenu->addAction(tr("Always on top\tCtrl+T"));
+        aotAct->setCheckable(true);
+        aotAct->setChecked(windowFlags() & Qt::WindowStaysOnTopHint);
+
+        // -- Playback submenu --
+        QMenu *pbMenu = menu.addMenu(tr("Playback"));
+        pbMenu->setStyleSheet(menuStyle);
+        QAction *jumpTimeAct = pbMenu->addAction(tr("Jump to time...\tJ"));
+        jumpTimeAct->setEnabled(m_host->durationMs() > 0);
+
+        QMenu *repMenu = pbMenu->addMenu(tr("Repeat"));
+        repMenu->setStyleSheet(menuStyle);
+        QAction *repOffAct = repMenu->addAction(tr("Off"));
+        repOffAct->setCheckable(true);
+        repOffAct->setChecked(true);    // single-track playback only
+        QAction *repAllAct = repMenu->addAction(tr("Repeat all"));
+        repAllAct->setCheckable(true);
+        repAllAct->setEnabled(false);
+        QAction *repOneAct = repMenu->addAction(tr("Repeat track"));
+        repOneAct->setCheckable(true);
+        repOneAct->setEnabled(false);
+
+        // -- Colour Theme submenu --
+        QMenu *themeMenu = menu.addMenu(tr("Colour Theme"));
+        themeMenu->setStyleSheet(menuStyle);
+        QStringList themeNames = gammasets().names();
+        std::sort(themeNames.begin(), themeNames.end(),
+                  [](const QString &a, const QString &b){
+                      return a.compare(b, Qt::CaseInsensitive) < 0;
+                  });
+        const auto *act = gammasets().active();
+        const QString activeName = act ? act->name : QString();
+        QHash<QAction *, QString> themeOf;
+        for (const QString &n : themeNames) {
+            QAction *a = themeMenu->addAction(n);
+            a->setCheckable(true);
+            a->setChecked(n == activeName);
+            themeOf.insert(a, n);
+        }
+
+        menu.addSeparator();
+
+        QAction *aboutAct = menu.addAction(tr("About qtamp..."));
+        menu.addSeparator();
+        QAction *quitAct  = menu.addAction(tr("Exit"));
+
+        // === Handle selection ===
+        QAction *sel = menu.exec(globalPos);
+        if (!sel) return;
+
+        if (sel == playFileAct) {
+            const QUrl u = m_host->pickFile(this);
+            if (!u.isEmpty()) {
+                m_host->player().setSource(u);
+                m_host->player().play();
+            }
+        }
+        else if (sel == aotAct) {
+            const bool on = sel->isChecked();
+            Qt::WindowFlags f = windowFlags();
+            if (on) f |=  Qt::WindowStaysOnTopHint;
+            else    f &= ~Qt::WindowStaysOnTopHint;
+            setWindowFlags(f);
+            show();
+        }
+        else if (sel == jumpTimeAct) {
+            bool ok;
+            QString timeStr = QInputDialog::getText(this,
+                tr("Jump to Time"),
+                tr("Enter time (MM:SS or seconds):"),
+                QLineEdit::Normal, "", &ok);
+            if (ok && !timeStr.isEmpty()) {
+                qint64 jumpMs = 0;
+                if (timeStr.contains(':')) {
+                    QStringList parts = timeStr.split(':');
+                    if (parts.size() >= 2)
+                        jumpMs = (parts[0].toInt() * 60 + parts[1].toInt()) * 1000;
+                } else {
+                    jumpMs = timeStr.toInt() * 1000;
+                }
+                m_host->seekMs(qBound(qint64(0), jumpMs, m_host->durationMs()));
+            }
+        }
+        else if (sel == aboutAct) {
+            QMessageBox::about(this, tr("About qtamp"),
+                tr("qtamp — a Qt-native Wasabi/Modern-skin player.\n\n"
+                   "Built on the qtWasabi skin engine + the original "
+                   "Winamp Maki VM."));
+        }
+        else if (sel == quitAct) close();
+        else if (themeOf.contains(sel)) {
+            setActiveGammaset(themeOf.value(sel));
+        }
+    }
+
     void applySliderDrag(int xInWindow) {
         if (m_sliderTrack.width() <= 0) return;
         const double v = double(xInWindow - m_sliderTrack.x()) /
