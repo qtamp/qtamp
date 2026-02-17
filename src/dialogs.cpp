@@ -154,34 +154,30 @@ FileInfoDialog::FileInfoDialog(const QString &filePath, QMediaPlayer *player, QW
 
     // Load current metadata from player (matches Windows GetDlgItemTextW)
     if (m_player) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         QMediaMetaData meta = m_player->metaData();
         titleEdit->setText(meta.stringValue(QMediaMetaData::Title));
-        QString artist = meta.stringValue(QMediaMetaData::AlbumArtist);
-        if (artist.isEmpty()) artist = meta.stringValue(QMediaMetaData::ContributingArtist);
-        artistEdit->setText(artist);
-        albumEdit->setText(meta.stringValue(QMediaMetaData::AlbumTitle));
-        QVariant dateVar = meta.value(QMediaMetaData::Date);
-        QVariant trackVar = meta.value(QMediaMetaData::TrackNumber);
-        genreEdit->setText(meta.stringValue(QMediaMetaData::Genre));
-        commentEdit->setPlainText(meta.stringValue(QMediaMetaData::Comment));
-#else
-        titleEdit->setText(m_player->metaData("Title").toString());
-        QString artist = m_player->metaData("AlbumArtist").toString();
-        if (artist.isEmpty()) artist = m_player->metaData("ContributingArtist").toString();
-        artistEdit->setText(artist);
-        albumEdit->setText(m_player->metaData("AlbumTitle").toString());
-        QVariant dateVar = m_player->metaData("Date");
-        QVariant trackVar = m_player->metaData("TrackNumber");
-        genreEdit->setText(m_player->metaData("Genre").toString());
-        commentEdit->setPlainText(m_player->metaData("Comment").toString());
-#endif
 
+        // Artist (ContributingArtist or AlbumArtist)
+        QString artist = meta.stringValue(QMediaMetaData::AlbumArtist);
+        if (artist.isEmpty())
+            artist = meta.stringValue(QMediaMetaData::ContributingArtist);
+        artistEdit->setText(artist);
+
+        albumEdit->setText(meta.stringValue(QMediaMetaData::AlbumTitle));
+
+        // Year from Date field
+        QVariant dateVar = meta.value(QMediaMetaData::Date);
         if (dateVar.canConvert<QDate>()) {
             yearEdit->setText(QString::number(dateVar.toDate().year()));
         }
+
+        // Track number
+        QVariant trackVar = meta.value(QMediaMetaData::TrackNumber);
         if (trackVar.isValid())
             trackEdit->setText(trackVar.toString());
+
+        genreEdit->setText(meta.stringValue(QMediaMetaData::Genre));
+        commentEdit->setPlainText(meta.stringValue(QMediaMetaData::Comment));
     }
 
     tabs->addTab(metadataTab, "Metadata");
@@ -196,15 +192,10 @@ FileInfoDialog::FileInfoDialog(const QString &filePath, QMediaPlayer *player, QW
     techLayout->addRow("Modified:", new QLabel(fi.lastModified().toString("yyyy-MM-dd hh:mm:ss")));
 
     if (m_player) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         QMediaMetaData meta = m_player->metaData();
-        QVariant br = meta.value(QMediaMetaData::AudioBitRate);
-        QString codec = meta.stringValue(QMediaMetaData::AudioCodec);
-#else
-        QVariant br = m_player->metaData("AudioBitRate");
-        QString codec = m_player->metaData("AudioCodec").toString();
-#endif
 
+        // Audio bitrate
+        QVariant br = meta.value(QMediaMetaData::AudioBitRate);
         if (br.isValid()) {
             techLayout->addRow("Bitrate:", new QLabel(QString::number(br.toInt() / 1000) + " kbps"));
         }
@@ -220,6 +211,8 @@ FileInfoDialog::FileInfoDialog(const QString &filePath, QMediaPlayer *player, QW
             techLayout->addRow("Duration:", new QLabel(QString("%1:%2").arg(mins).arg(secs, 2, 10, QChar('0'))));
         }
 
+        // Audio codec
+        QString codec = meta.stringValue(QMediaMetaData::AudioCodec);
         if (!codec.isEmpty())
             techLayout->addRow("Codec:", new QLabel(codec));
     }
@@ -275,7 +268,7 @@ void FileInfoDialog::onSave()
 
 AboutDialog::AboutDialog(const QString &skinPath, QWidget *parent) : QDialog(parent)
 {
-    setWindowTitle("About Qtamp");
+    setWindowTitle("About Winamp");
     setFixedSize(480, 360);
 
     // Load splash2.bmp and team.bmp
@@ -302,23 +295,24 @@ AboutDialog::AboutDialog(const QString &skinPath, QWidget *parent) : QDialog(par
     }
 
     // Credits text (from original creditsrend.c)
-    credits = QStringList()
-        << "Qtamp\n    The Credits"
-        << "Linux Qt5/Qt6 Port:\n    Kristopher Craig"
-        << "Qtamp\n    Qt-native music player"
-        << "Original Development:\n Quentin Hebette, Thierry Honore,\n Lionel Peeters, Hakan Danisik,\n Eddy Richman, Jef Mauguit"
-        << "QA, Engineering & Support:\n    DJ Egg"
-        << "Freeform Skin Engine:\n    Linus Brolin"
-        << "Bento Skin:\n    Martin Pohlmann, Taber Buhl,\n    Ben Allison, Victor Brocaz"
-        << "Qtamp is inspired by Winamp by Justin Frankel and the Nullsoft crew."
-        << "    Peter Pawlowski, Tom Pepper,\n    Ryan Geiss, Will Fisher,\n    Maksim Tyrtyshny, Darren Owen,\n    Ben Allison"
-        << "Modern Skin:\n    Sven Kistner"
-        << "PCM EQ magic:\n    4Front Technologies / George Yohng"
-        << "Intro sound:\n    JJ McKay"
-        << "Credits rendered with Plush:\n    http://www.cockos.com/wdl/\n    (8bpp foreva)"
-        << "Thanks:\n    NS Beta Team & Craig Freer,\n    Our lowly forum moderators,\n    Our precious skin reviewers"
-        << QString::fromUtf8("Copyright \u00A9 1997-2026 Winamp SA\n    www.winamp.com")
-        << "It really whips\n    the llama's ass!";
+    credits = {
+        "Winamp v5.9.0\n    The Credits",
+        "Linux Qt6 Port:\n    Kristopher Craig",
+        "Winamp for Linux\n    Qt6 Native Port",
+        "Original Development:\n Quentin Hebette, Thierry Honore,\n Lionel Peeters, Hakan Danisik,\n Eddy Richman, Jef Mauguit",
+        "QA, Engineering & Support:\n    DJ Egg",
+        "Freeform Skin Engine:\n    Linus Brolin",
+        "Bento Skin:\n    Martin Pohlmann, Taber Buhl,\n    Ben Allison, Victor Brocaz",
+        "Winamp Hall-of-Fame:\n    Justin Frankel,\n    Christophe Thibault,\n    Francis Gastellu,\n    Brennan Underwood",
+        "    Peter Pawlowski, Tom Pepper,\n    Ryan Geiss, Will Fisher,\n    Maksim Tyrtyshny, Darren Owen,\n    Ben Allison",
+        "Modern Skin:\n    Sven Kistner",
+        "PCM EQ magic:\n    4Front Technologies / George Yohng",
+        "Intro sound:\n    JJ McKay",
+        "Credits rendered with Plush:\n    http://www.cockos.com/wdl/\n    (8bpp foreva)",
+        "Thanks:\n    NS Beta Team & Craig Freer,\n    Our lowly forum moderators,\n    Our precious skin reviewers",
+        QString::fromUtf8("Copyright \u00A9 1997-2026 Winamp SA\n    www.winamp.com"),
+        "It really whips\n    the llama's ass!",
+    };
 
     // Init starfield
     for (int i = 0; i < NUM_STARS; i++) {
@@ -503,7 +497,7 @@ void AboutDialog::paintEvent(QPaintEvent *)
     // === Bottom bar: "Winamp v5.9.0" ===
     p.setPen(QColor(100, 100, 100));
     p.setFont(QFont("Tahoma", 8));
-    p.drawText(0, h - 18, w, 15, Qt::AlignCenter, "Qtamp");
+    p.drawText(0, h - 18, w, 15, Qt::AlignCenter, "Winamp v5.9.0 for Linux — Qt6 Native Port");
 }
 
 void AboutDialog::keyPressEvent(QKeyEvent *e)
@@ -599,7 +593,7 @@ QString PlayLocationDialog::getUrl() const
 
 PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent)
 {
-    setWindowTitle("Qtamp Preferences");
+    setWindowTitle("Winamp Preferences");
     setMinimumSize(600, 450);
     setStyleSheet(
         "QDialog { background-color: #2b2b3d; color: #00ff00; }"
@@ -924,27 +918,34 @@ QWidget *PreferencesDialog::createModernSkinsPage()
 
     QLabel *title = new QLabel("<b>Modern Skins (XML)</b>", page);
     layout->addWidget(title);
-    layout->addSpacing(12);
 
     QLabel *notice = new QLabel(
-        "⚠️  <b>Modern skins are not yet supported on Linux.</b>\n\n"
-        "The Wasabi/Bento XML skin engine has not been fully ported.\n"
-        "Please use a Classic skin (.wsz) instead.\n\n"
-        "Modern skin support is planned for a future release.",
+        "Modern skins use the Wasabi/Bento XML engine. Renderer support is "
+        "experimental — rendering and hit-zones may be incomplete. "
+        "Drop .wal archives or unzipped modern-skin folders into "
+        "~/.winamp/skins/.",
         page
     );
     notice->setWordWrap(true);
-    notice->setStyleSheet(
-        "QLabel { "
-        "  color: #ffcc00; "
-        "  background-color: #2a1a00; "
-        "  border: 1px solid #665500; "
-        "  border-radius: 4px; "
-        "  padding: 12px; "
-        "}"
-    );
+    notice->setStyleSheet("QLabel { color: #888; padding: 4px 0 8px 0; }");
     layout->addWidget(notice);
-    layout->addStretch();
+
+    modernSkinListWidget = new QListWidget(page);
+    populateModernSkins();
+    connect(modernSkinListWidget, &QListWidget::itemDoubleClicked,
+            this, &PreferencesDialog::onModernSkinSelected);
+    layout->addWidget(modernSkinListWidget);
+
+    QHBoxLayout *btnRow = new QHBoxLayout();
+    QPushButton *openDirBtn = new QPushButton("Open Skins Folder", page);
+    connect(openDirBtn, &QPushButton::clicked, this, []() {
+        QString skinsDir = QDir::homePath() + "/.winamp/skins";
+        QDir().mkpath(skinsDir);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(skinsDir));
+    });
+    btnRow->addWidget(openDirBtn);
+    btnRow->addStretch();
+    layout->addLayout(btnRow);
     return page;
 }
 
@@ -1103,7 +1104,7 @@ QWidget *PreferencesDialog::createPluginsPage()
     layout->addSpacing(10);
     layout->addWidget(new QLabel("Plug-in architecture is not yet available on Linux.\n\n"
                                  "Currently using:\n"
-                                 "  • Qt5/Qt6 Multimedia for audio decoding & output\n"
+                                 "  • Qt6 Multimedia for audio decoding & output\n"
                                  "  • projectM for Milkdrop visualization\n\n"
                                  "Future support planned for:\n"
                                  "  • Input plug-ins (in_*.so)\n"
@@ -1122,11 +1123,8 @@ void PreferencesDialog::populateSkins()
     QString appDir = QCoreApplication::applicationDirPath();
     QStringList defaultCandidates = {
         appDir + "/../share/winamp/skins/default",
-        appDir + "/../share/winamp/resource",
         "/usr/share/winamp/skins/default",
-        "/usr/share/winamp/resource",
         "/usr/local/share/winamp/skins/default",
-        "/usr/local/share/winamp/resource",
         appDir + "/../skins/default",
         appDir + "/../../skins/default",
         QDir::homePath() + "/.winamp/skins/default"
@@ -1134,27 +1132,31 @@ void PreferencesDialog::populateSkins()
     for (const QString &p : defaultCandidates) {
         QDir d(p);
         if (d.exists()) {
-            // Require MAIN.BMP to consider it a valid default skin
-            QStringList mainBmp = d.entryList(QStringList() << "MAIN.BMP" << "main.bmp" << "Main.bmp", QDir::Files);
-            if (!mainBmp.isEmpty()) {
+            QStringList bmps = d.entryList(QStringList() << "*.bmp" << "*.BMP", QDir::Files);
+            if (!bmps.isEmpty()) {
                 defaultSkinPath = d.absolutePath();
                 break;
             }
         }
     }
 
-    // Always show "Qtamp Default" as the first entry
-    skinListWidget->addItem("Qtamp Default");
+    // Always show "Winamp Default" as the first entry
+    skinListWidget->addItem("Winamp Default");
 
     QDir skinsDir(QDir::homePath() + "/.winamp/skins");
     if (!skinsDir.exists()) {
         skinsDir.mkpath(".");
     }
-    // List directories (unzipped skins), skip "default" since we already show it
+    // List directories (unzipped skins), skip "default" since we already
+    // show it. Skip modern (Wasabi) skin dirs — those belong on the Modern
+    // Skins page; mixing them here loads them through the classic-bitmap
+    // path which can't render them.
     QStringList skinFolders = skinsDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
     for (const QString &folder : skinFolders) {
-        if (folder.toLower() != "default")
-            skinListWidget->addItem(folder);
+        if (folder.toLower() == "default") continue;
+        QString full = skinsDir.absoluteFilePath(folder);
+        if (isModernSkinDir(full)) continue;
+        skinListWidget->addItem(folder);
     }
 
     // List .wsz and .zip archives (skip .wal — modern/Bento skins, not compatible)
@@ -1169,22 +1171,52 @@ void PreferencesDialog::populateSkins()
 
 void PreferencesDialog::populateModernSkins()
 {
-    // Modern skins are not yet supported on Linux — nothing to populate.
-    Q_UNUSED(modernSkinListWidget);
+    if (!modernSkinListWidget) return;
+    modernSkinListWidget->clear();
+
+    QString skinsBase = QDir::homePath() + "/.winamp/skins";
+    QDir skinsDir(skinsBase);
+    if (!skinsDir.exists()) return;
+
+    // Unpacked modern skins are directories containing skin.xml at the top
+    QStringList folders = skinsDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &folder : folders) {
+        QString full = skinsBase + "/" + folder;
+        if (isModernSkinDir(full)) {
+            modernSkinListWidget->addItem(folder);
+        }
+    }
+
+    // .wal archives are modern-skin archives (Wasabi/Bento)
+    QStringList walFilters;
+    walFilters << "*.wal" << "*.WAL";
+    QStringList walFiles = skinsDir.entryList(walFilters, QDir::Files);
+    for (const QString &f : walFiles) {
+        modernSkinListWidget->addItem(f);
+    }
 }
 
 void PreferencesDialog::onModernSkinSelected(QListWidgetItem *item)
 {
-    // Modern skins are not yet supported on Linux — selection is a no-op.
-    Q_UNUSED(item);
+    if (!item) return;
+    QString name = item->text();
+    QString skinsBase = QDir::homePath() + "/.winamp/skins/";
+    QString fullPath = skinsBase + name;
+
+    if (name.endsWith(".wal", Qt::CaseInsensitive)) {
+        QString extracted = extractSkinArchive(fullPath);
+        if (!extracted.isEmpty()) emit skinChanged(extracted);
+    } else {
+        emit skinChanged(fullPath);
+    }
 }
 
 void PreferencesDialog::onSkinSelected(QListWidgetItem *item)
 {
     QString skinName = item->text();
 
-    // Handle "Qtamp Default" entry
-    if (skinName == "Qtamp Default") {
+    // Handle "Winamp Default" entry
+    if (skinName == "Winamp Default") {
         if (!defaultSkinPath.isEmpty()) {
             emit skinChanged(defaultSkinPath);
         }

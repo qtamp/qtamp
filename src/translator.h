@@ -8,11 +8,7 @@
 #include <QTextStream>
 #include <QDir>
 #include <QFileInfo>
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QStringConverter>
-#else
-#include <QTextCodec>
-#endif
 
 class Translator {
 public:

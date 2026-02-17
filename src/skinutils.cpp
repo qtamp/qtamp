@@ -1,5 +1,4 @@
 #include "skinutils.h"
-#include <QDebug>
 #include <cmath>
 
 // Global skin playlist colors
@@ -8,28 +7,45 @@ SkinPlaylistColors g_plColors;
 QString extractSkinArchive(const QString &archivePath) {
     QFileInfo fi(archivePath);
     if (!fi.exists()) return {};
-    
+
+    // .wal = modern (Wasabi/Bento) skin archive — preserve directory
+    // structure (skin.xml references files via relative paths into subdirs
+    // like xml/, freeform/, scripts/). Classic .wsz/.zip skins flatten.
+    bool isModernArchive = (fi.suffix().toLower() == "wal");
+
     QString cacheDirBase = QDir::homePath() + "/.cache/winamp/skins";
     QString skinName = fi.completeBaseName();
     QString extractDir = cacheDirBase + "/" + skinName;
     QDir().mkpath(extractDir);
-    
+
     QDir ed(extractDir);
-    QStringList bmps = ed.entryList(QStringList() << "*.bmp" << "*.BMP", QDir::Files);
-    if (!bmps.isEmpty()) {
-        return extractDir;
+    if (isModernArchive) {
+        if (QFile::exists(extractDir + "/skin.xml") ||
+            QFile::exists(extractDir + "/Skin.xml") ||
+            QFile::exists(extractDir + "/SKIN.XML")) {
+            return extractDir;
+        }
+    } else {
+        QStringList bmps = ed.entryList(QStringList() << "*.bmp" << "*.BMP", QDir::Files);
+        if (!bmps.isEmpty()) {
+            return extractDir;
+        }
     }
-    
+
     QProcess proc;
     proc.setWorkingDirectory(extractDir);
-    proc.start("unzip", QStringList() << "-o" << "-j" << archivePath << "-d" << extractDir);
-    proc.waitForFinished(10000);
-    
+    QStringList args;
+    args << "-o";
+    if (!isModernArchive) args << "-j"; // flatten only for classic skins
+    args << archivePath << "-d" << extractDir;
+    proc.start("unzip", args);
+    proc.waitForFinished(15000);
+
     if (proc.exitCode() != 0) {
         qWarning() << "Failed to extract skin archive:" << archivePath << proc.readAllStandardError();
         return {};
     }
-    
+
     return extractDir;
 }
 

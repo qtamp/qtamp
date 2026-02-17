@@ -11,9 +11,7 @@
 #include <QListWidget>
 #include <QFileInfo>
 #include <QMediaPlayer>
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QMediaMetaData>
-#endif
 #include <QTabWidget>
 #include <QFormLayout>
 #include <QTimer>
