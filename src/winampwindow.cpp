@@ -66,6 +66,7 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
     nextAudioOutput->setVolume(volume / 255.0f);
     usingNextPlayer = false;
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     // Initialize EQ DSP state
     memset(eqState, 0, sizeof(eqState));
     eqSampleRate = 0;
@@ -77,6 +78,7 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
     player->setAudioBufferOutput(audioBufferOutput);
     connect(audioBufferOutput, &QAudioBufferOutput::audioBufferReceived,
             this, &WinampWindow::processAudioBuffer);
+#endif
 
     // System tray icon (matches Windows SYSTRAY.cpp)
     setupSystemTray();
@@ -142,9 +144,11 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
                 std::swap(player, nextPlayer);
                 std::swap(audioOutput, nextAudioOutput);
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
                 // Update visualization to use the now-active player
                 player->setAudioBufferOutput(audioBufferOutput);
                 nextPlayer->setAudioBufferOutput(nullptr);
+#endif
 
                 // Start the preloaded track
                 player->play();
@@ -950,6 +954,7 @@ void WinampWindow::paintModern(QPainter &p) {
 // ============================================================================
 // processAudioBuffer — visualization + EQ DSP processing
 // ============================================================================
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
 void WinampWindow::processAudioBuffer(const QAudioBuffer &buffer) {
     const QAudioFormat fmt = buffer.format();
     int sampleCount = buffer.frameCount();
@@ -1149,6 +1154,7 @@ void WinampWindow::processAudioBuffer(const QAudioBuffer &buffer) {
         }
     }
 }
+#endif // QT_VERSION >= 6.8.0
 
 // ============================================================================
 // paintEvent — Classic skin renderer
@@ -2574,9 +2580,13 @@ void WinampWindow::playTrack(const QString &fileName) {
 // Apply volume to audio outputs — respects EQ DSP path
 // When EQ DSP is active, volume is applied in the DSP chain, not via QAudioOutput
 void WinampWindow::applyVolume() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     if (!eqDspActive) {
         audioOutput->setVolume(volume / 255.0f);
     }
+#else
+    audioOutput->setVolume(volume / 255.0f);
+#endif
     // nextAudioOutput always gets volume (it plays before DSP takes over)
     nextAudioOutput->setVolume(volume / 255.0f);
 }

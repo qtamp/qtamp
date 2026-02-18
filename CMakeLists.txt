@@ -70,20 +70,34 @@ if(PROJECTM_LIB)
 
     # Bundle libprojectM and its non-standard dependencies
     # so target systems don't need libprojectm-dev installed
-    install(FILES /usr/lib/libprojectM.so.2 /usr/lib/libprojectM.so.2.1.0
-            DESTINATION lib/winamp)
-    install(FILES /usr/lib/x86_64-linux-gnu/libftgl.so.2 /usr/lib/x86_64-linux-gnu/libftgl.so.2.4.0
-            DESTINATION lib/winamp)
-    install(FILES /usr/lib/x86_64-linux-gnu/libGLEW.so.2.2 /usr/lib/x86_64-linux-gnu/libGLEW.so.2.2.0
-            DESTINATION lib/winamp)
+    # Dynamically discover library paths (works across Debian 11 .so.3 and Ubuntu .so.2)
+    get_filename_component(PROJECTM_DIR "${PROJECTM_LIB}" DIRECTORY)
+    file(GLOB PROJECTM_SO_FILES "${PROJECTM_DIR}/libprojectM.so*")
+    file(GLOB FTGL_SO_FILES "/usr/lib/libftgl.so*" "/usr/lib/x86_64-linux-gnu/libftgl.so*")
+    file(GLOB GLEW_SO_FILES "/usr/lib/libGLEW.so*" "/usr/lib/x86_64-linux-gnu/libGLEW.so*")
+    if(PROJECTM_SO_FILES)
+        install(FILES ${PROJECTM_SO_FILES} DESTINATION lib/winamp)
+    endif()
+    if(FTGL_SO_FILES)
+        install(FILES ${FTGL_SO_FILES} DESTINATION lib/winamp)
+    endif()
+    if(GLEW_SO_FILES)
+        install(FILES ${GLEW_SO_FILES} DESTINATION lib/winamp)
+    endif()
 
     # Bundle projectM presets
     if(EXISTS /usr/share/projectM/presets)
         install(DIRECTORY /usr/share/projectM/presets
                 DESTINATION share/winamp/projectM)
+    elseif(EXISTS /usr/share/projectm/presets)
+        install(DIRECTORY /usr/share/projectm/presets
+                DESTINATION share/winamp/projectM)
     endif()
     if(EXISTS /usr/share/projectM/config.inp)
         install(FILES /usr/share/projectM/config.inp
+                DESTINATION share/winamp/projectM)
+    elseif(EXISTS /usr/share/projectm/config.inp)
+        install(FILES /usr/share/projectm/config.inp
                 DESTINATION share/winamp/projectM)
     endif()
 endif()

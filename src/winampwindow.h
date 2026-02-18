@@ -2,8 +2,10 @@
 #include <QWidget>
 #include <QMediaPlayer>
 #include <QAudioOutput>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
 #include <QAudioBufferOutput>
 #include <QAudioSink>
+#endif
 #include <QMediaDevices>
 #include <QIODevice>
 #include <QTimer>
@@ -74,7 +76,9 @@ public:
     QRect modernSeekRect() const;
     QRect modernVolumeRect() const;
     void paintModern(QPainter &p);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     void processAudioBuffer(const QAudioBuffer &buffer);
+#endif
 
     void playTrack(const QString &fileName);
     void applyVolume();
@@ -104,18 +108,22 @@ protected:
 private:
     QMediaPlayer *player;
     QAudioOutput *audioOutput;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     QAudioBufferOutput *audioBufferOutput;
+#endif
     QMediaPlayer *nextPlayer;
     QAudioOutput *nextAudioOutput;
     bool usingNextPlayer;
     
     // EQ DSP processing
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     QAudioSink *audioSink = nullptr;
     QIODevice *audioSinkDevice = nullptr;
     eq10_t eqState[2];
     int eqSampleRate = 0;
     int eqChannels = 0;
     bool eqDspActive = false;
+#endif
     QTimer *timer;
     QTimer *scrollTimer;
     QString currentFile;
