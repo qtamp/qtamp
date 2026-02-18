@@ -56,10 +56,36 @@ target_link_libraries(winamp
     Qt6::OpenGLWidgets
 )
 
+# Set RPATH so the binary finds bundled libs in /usr/lib/winamp/
+set_target_properties(winamp PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../lib/winamp"
+    BUILD_WITH_INSTALL_RPATH OFF
+    INSTALL_RPATH_USE_LINK_DIRECTORIES TRUE
+)
+
 # Conditionally link projectM if available
 if(PROJECTM_LIB)
     target_link_libraries(winamp ${PROJECTM_LIB})
     target_compile_definitions(winamp PRIVATE HAVE_PROJECTM)
+
+    # Bundle libprojectM and its non-standard dependencies
+    # so target systems don't need libprojectm-dev installed
+    install(FILES /usr/lib/libprojectM.so.2 /usr/lib/libprojectM.so.2.1.0
+            DESTINATION lib/winamp)
+    install(FILES /usr/lib/x86_64-linux-gnu/libftgl.so.2 /usr/lib/x86_64-linux-gnu/libftgl.so.2.4.0
+            DESTINATION lib/winamp)
+    install(FILES /usr/lib/x86_64-linux-gnu/libGLEW.so.2.2 /usr/lib/x86_64-linux-gnu/libGLEW.so.2.2.0
+            DESTINATION lib/winamp)
+
+    # Bundle projectM presets
+    if(EXISTS /usr/share/projectM/presets)
+        install(DIRECTORY /usr/share/projectM/presets
+                DESTINATION share/winamp/projectM)
+    endif()
+    if(EXISTS /usr/share/projectM/config.inp)
+        install(FILES /usr/share/projectM/config.inp
+                DESTINATION share/winamp/projectM)
+    endif()
 endif()
 
 # Conditionally link Qt6 DBus if available

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <QPainter>
+#include <QCoreApplication>
 
 MilkdropWindow::MilkdropWindow(QWidget *parent) : QOpenGLWidget(parent) {
     setWindowTitle("Milkdrop Visualization");
@@ -92,7 +93,15 @@ void MilkdropWindow::initializeGL() {
     s.textureSize = 1024;
     s.windowWidth = width();
     s.windowHeight = height();
-    s.presetURL = "/usr/share/projectM/presets";
+    // Search bundled presets first, then system presets
+    s.presetURL = "/usr/share/winamp/projectM/presets";
+    if (!QFile::exists(QString::fromStdString(s.presetURL))) {
+        for (auto &p : {std::string(QCoreApplication::applicationDirPath().toStdString() + "/../share/winamp/projectM/presets"),
+                        std::string("/usr/share/projectM/presets"),
+                        std::string("/usr/local/share/projectM/presets")}) {
+            if (QFile::exists(QString::fromStdString(p))) { s.presetURL = p; break; }
+        }
+    }
     s.smoothPresetDuration = 5;
     s.presetDuration = 30;
     s.beatSensitivity = 1.0f;
