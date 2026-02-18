@@ -442,6 +442,12 @@ void WinampWindow::onSkinChanged(const QString &skinPath) {
 
         QString appDir = QCoreApplication::applicationDirPath();
         QStringList fallbacks = {
+            appDir + "/../share/winamp/skins/default",
+            appDir + "/../share/winamp/resource",
+            "/usr/share/winamp/skins/default",
+            "/usr/share/winamp/resource",
+            "/usr/local/share/winamp/skins/default",
+            "/usr/local/share/winamp/resource",
             appDir + "/../skins/default",
             appDir + "/../../skins/default",
             QDir::homePath() + "/.winamp/skins/default",

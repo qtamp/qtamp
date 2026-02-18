@@ -23,6 +23,10 @@ int main(int argc, char *argv[]) {
   // Load the Winamp icon from the source resource directory
   QString appDir = QCoreApplication::applicationDirPath();
   QStringList iconCandidates = {
+      appDir + "/../share/winamp/resource/WinampIcon.ico",
+      appDir + "/../share/icons/hicolor/256x256/apps/winamp.png",
+      "/usr/share/winamp/resource/WinampIcon.ico",
+      "/usr/share/icons/hicolor/256x256/apps/winamp.png",
       appDir + "/../../Src/Winamp/resource/WinampIcon.ico",
       appDir + "/../Src/Winamp/resource/WinampIcon.ico",
       appDir + "/WinampIcon.ico"};
@@ -47,7 +51,17 @@ int main(int argc, char *argv[]) {
   if (!skinPath.isEmpty())
     candidates << skinPath;
 
-  // Paths relative to the executable
+  // FHS-standard paths for system-wide install (/usr/bin -> /usr/share/winamp)
+  candidates << appDir + "/../share/winamp/skins/default"
+             << appDir + "/../share/winamp/resource";
+
+  // Absolute FHS paths (fallback if appDir is not /usr/bin)
+  candidates << "/usr/share/winamp/skins/default"
+             << "/usr/share/winamp/resource"
+             << "/usr/local/share/winamp/skins/default"
+             << "/usr/local/share/winamp/resource";
+
+  // Paths relative to the executable (development builds)
   candidates << appDir + "/../skins/default" << appDir + "/../../skins/default"
              << QDir::homePath() + "/.winamp/skins/default";
 
@@ -75,7 +89,13 @@ int main(int argc, char *argv[]) {
   // If no classic skin loaded yet and saved skin was modern, load default
   // classic as fallback
   if (!loaded) {
-    QStringList fallbackClassic = {appDir + "/../skins/default",
+    QStringList fallbackClassic = {appDir + "/../share/winamp/skins/default",
+                                   appDir + "/../share/winamp/resource",
+                                   "/usr/share/winamp/skins/default",
+                                   "/usr/share/winamp/resource",
+                                   "/usr/local/share/winamp/skins/default",
+                                   "/usr/local/share/winamp/resource",
+                                   appDir + "/../skins/default",
                                    appDir + "/../../skins/default",
                                    QDir::homePath() + "/.winamp/skins/default",
                                    appDir + "/../Src/Winamp/resource",

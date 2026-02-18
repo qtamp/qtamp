@@ -1,12 +1,17 @@
 #include "translator.h"
+#include <QCoreApplication>
 
 void Translator::loadLanguage(const QString &langCode) {
     strings.clear();
     currentLang = langCode;
     
-    // Try ~/.winamp/lang/ first, then fallback to bundled location
+    // Try ~/.winamp/lang/ first, then FHS paths, then bundled location
+    QString appDir = QCoreApplication::applicationDirPath();
     QStringList langPaths = {
         QDir::homePath() + "/.winamp/lang",
+        appDir + "/../share/winamp/lang",
+        "/usr/share/winamp/lang",
+        "/usr/local/share/winamp/lang",
         "lang"
     };
     
@@ -27,8 +32,12 @@ QStringList Translator::getAvailableLanguages() {
     langs << "en" << "de" << "fr" << "es" << "pt" << "ru" << "ja" << "zh";
     
     // Scan for installed language files
+    QString appDir = QCoreApplication::applicationDirPath();
     QStringList langPaths = {
         QDir::homePath() + "/.winamp/lang",
+        appDir + "/../share/winamp/lang",
+        "/usr/share/winamp/lang",
+        "/usr/local/share/winamp/lang",
         "lang"
     };
     
