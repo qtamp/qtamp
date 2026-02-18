@@ -15,9 +15,14 @@ else()
     message(STATUS "Qt6 DBus not found — MPRIS2 disabled (media keys won't work)")
 endif()
 
-# projectM — Milkdrop-compatible visualization engine
+# projectM — Milkdrop-compatible visualization engine (optional)
 # Install: sudo apt-get install libprojectm-dev projectm-data
-find_library(PROJECTM_LIB projectM REQUIRED)
+find_library(PROJECTM_LIB projectM)
+if(PROJECTM_LIB)
+    message(STATUS "libprojectM found — MilkDrop visualizations enabled")
+else()
+    message(STATUS "libprojectM not found — MilkDrop visualizations disabled")
+endif()
 
 add_executable(winamp
     src/main.cpp
@@ -49,8 +54,13 @@ target_link_libraries(winamp
     Qt6::MultimediaWidgets
     Qt6::OpenGL
     Qt6::OpenGLWidgets
-    ${PROJECTM_LIB}
 )
+
+# Conditionally link projectM if available
+if(PROJECTM_LIB)
+    target_link_libraries(winamp ${PROJECTM_LIB})
+    target_compile_definitions(winamp PRIVATE HAVE_PROJECTM)
+endif()
 
 # Conditionally link Qt6 DBus if available
 if(Qt6DBus_FOUND)

@@ -10,7 +10,9 @@
 #include <QShowEvent>
 #include <QFile>
 #include <QDebug>
+#ifdef HAVE_PROJECTM
 #include <libprojectM/projectM.hpp>
+#endif
 
 class MilkdropWindow : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
@@ -24,6 +26,7 @@ public:
     void prevPreset();
     void randomPreset();
     void toggleLock();
+    bool isAvailable() const;
     
 protected:
     void initializeGL() override;
@@ -40,7 +43,9 @@ signals:
 private:
     void toggleFullScreen();
     
+#ifdef HAVE_PROJECTM
     projectM *pm = nullptr;
+#endif
     QTimer *renderTimer;
 };
 

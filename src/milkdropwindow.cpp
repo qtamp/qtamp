@@ -2,6 +2,7 @@
 #include <cstring>
 #include <algorithm>
 #include <string>
+#include <QPainter>
 
 MilkdropWindow::MilkdropWindow(QWidget *parent) : QOpenGLWidget(parent) {
     setWindowTitle("Milkdrop Visualization");
@@ -18,41 +19,71 @@ MilkdropWindow::MilkdropWindow(QWidget *parent) : QOpenGLWidget(parent) {
 
 MilkdropWindow::~MilkdropWindow() {
     makeCurrent();
+#ifdef HAVE_PROJECTM
     if (pm) { delete pm; pm = nullptr; }
+#endif
     doneCurrent();
 }
 
+bool MilkdropWindow::isAvailable() const {
+#ifdef HAVE_PROJECTM
+    return true;
+#else
+    return false;
+#endif
+}
+
 void MilkdropWindow::feedPCMInt16(const qint16 *data, int frames, int channels) {
+#ifdef HAVE_PROJECTM
     if (!pm) return;
-    // Convert interleaved int16 stereo to the format projectM expects:
-    // addPCM16Data wants interleaved L,R,L,R... shorts
     int n = qMin(frames, 512);
     pm->pcm()->addPCM16Data(data, n);
+#else
+    Q_UNUSED(data); Q_UNUSED(frames); Q_UNUSED(channels);
+#endif
 }
 
 void MilkdropWindow::feedPCMFloat(const float *data, int frames, int channels) {
+#ifdef HAVE_PROJECTM
     if (!pm) return;
-    // Convert interleaved float to mono float for addPCMfloat
     float mono[512];
     int n = qMin(frames, 512);
     for (int i = 0; i < n; i++)
         mono[i] = data[i * channels];
     pm->pcm()->addPCMfloat(mono, n);
+#else
+    Q_UNUSED(data); Q_UNUSED(frames); Q_UNUSED(channels);
+#endif
 }
 
-void MilkdropWindow::nextPreset() { if (pm) pm->selectNext(true); }
-void MilkdropWindow::prevPreset() { if (pm) pm->selectPrevious(true); }
-void MilkdropWindow::randomPreset() { if (pm) pm->selectRandom(true); }
+void MilkdropWindow::nextPreset() {
+#ifdef HAVE_PROJECTM
+    if (pm) pm->selectNext(true);
+#endif
+}
+void MilkdropWindow::prevPreset() {
+#ifdef HAVE_PROJECTM
+    if (pm) pm->selectPrevious(true);
+#endif
+}
+void MilkdropWindow::randomPreset() {
+#ifdef HAVE_PROJECTM
+    if (pm) pm->selectRandom(true);
+#endif
+}
 
 void MilkdropWindow::toggleLock() {
+#ifdef HAVE_PROJECTM
     if (!pm) return;
     pm->setPresetLock(!pm->isPresetLocked());
+#endif
 }
 
 void MilkdropWindow::initializeGL() {
     initializeOpenGLFunctions();
     glClearColor(0, 0, 0, 1);
 
+#ifdef HAVE_PROJECTM
     // Create projectM instance from settings struct
     projectM::Settings s;
     s.meshX = 32;
@@ -93,23 +124,39 @@ void MilkdropWindow::initializeGL() {
         qWarning() << "Failed to initialize projectM (unknown error)";
         pm = nullptr;
     }
+#endif
 
     renderTimer->start(1000 / 33);
 }
 
 void MilkdropWindow::resizeGL(int w, int h) {
+#ifdef HAVE_PROJECTM
     if (pm) pm->projectM_resetGL(w, h);
+#else
+    Q_UNUSED(w); Q_UNUSED(h);
+#endif
 }
 
 void MilkdropWindow::paintGL() {
+#ifdef HAVE_PROJECTM
     if (pm) {
         pm->renderFrame();
     } else {
         glClear(GL_COLOR_BUFFER_BIT);
     }
+#else
+    glClear(GL_COLOR_BUFFER_BIT);
+    // Draw "not available" message
+    QPainter p(this);
+    p.setPen(QColor(0, 255, 0));
+    p.setFont(QFont("Sans", 14));
+    p.drawText(rect(), Qt::AlignCenter, "MilkDrop requires libprojectM\nInstall: sudo apt install libprojectm-dev");
+    p.end();
+#endif
 }
 
 void MilkdropWindow::keyPressEvent(QKeyEvent *e) {
+#ifdef HAVE_PROJECTM
     if (!pm) { QOpenGLWidget::keyPressEvent(e); return; }
     switch (e->key()) {
         case Qt::Key_Space: nextPreset(); break;
@@ -128,6 +175,21 @@ void MilkdropWindow::keyPressEvent(QKeyEvent *e) {
         default: QOpenGLWidget::keyPressEvent(e); return;
     }
     e->accept();
+#else
+    switch (e->key()) {
+        case Qt::Key_F:
+        case Qt::Key_F11:
+            toggleFullScreen();
+            break;
+        case Qt::Key_Escape:
+            if (isFullScreen()) toggleFullScreen();
+            else close();
+            break;
+        case Qt::Key_Q: close(); break;
+        default: QOpenGLWidget::keyPressEvent(e); return;
+    }
+    e->accept();
+#endif
 }
 
 void MilkdropWindow::mouseDoubleClickEvent(QMouseEvent *e) {
