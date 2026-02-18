@@ -67,9 +67,14 @@ install(DIRECTORY Src/Winamp/resource/ DESTINATION share/winamp/resource)
 install(FILES packaging/winamp.desktop DESTINATION share/applications)
 install(FILES packaging/org.winamp.Winamp.metainfo.xml DESTINATION share/metainfo)
 
-# Install icon at multiple standard sizes (using the .ico from resources)
-# For now install a single scalable reference; distro packagers can add PNG sizes
-install(FILES Src/Winamp/resource/WinampIcon.ico DESTINATION share/icons/hicolor/256x256/apps RENAME winamp.ico)
+# Install icons at all standard sizes (PNG for Linux desktop integration)
+install(FILES packaging/icons/winamp_16.png DESTINATION share/icons/hicolor/16x16/apps RENAME winamp.png)
+install(FILES packaging/icons/winamp_24.png DESTINATION share/icons/hicolor/24x24/apps RENAME winamp.png)
+install(FILES packaging/icons/winamp_32.png DESTINATION share/icons/hicolor/32x32/apps RENAME winamp.png)
+install(FILES packaging/icons/winamp_48.png DESTINATION share/icons/hicolor/48x48/apps RENAME winamp.png)
+install(FILES packaging/icons/winamp_64.png DESTINATION share/icons/hicolor/64x64/apps RENAME winamp.png)
+install(FILES packaging/icons/winamp_128.png DESTINATION share/icons/hicolor/128x128/apps RENAME winamp.png)
+install(FILES packaging/icons/winamp_256.png DESTINATION share/icons/hicolor/256x256/apps RENAME winamp.png)
 
 # ──────────────────────────────────────────────
 # CPack — generate .deb, .rpm, and .tar.gz
