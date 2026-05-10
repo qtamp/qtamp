@@ -1121,6 +1121,12 @@ void PreferencesDialog::populateSkins()
     // Find the built-in default skin path
     QString appDir = QCoreApplication::applicationDirPath();
     QStringList defaultCandidates = {
+        appDir + "/../share/winamp/skins/default",
+        appDir + "/../share/winamp/resource",
+        "/usr/share/winamp/skins/default",
+        "/usr/share/winamp/resource",
+        "/usr/local/share/winamp/skins/default",
+        "/usr/local/share/winamp/resource",
         appDir + "/../skins/default",
         appDir + "/../../skins/default",
         QDir::homePath() + "/.winamp/skins/default"
@@ -1128,8 +1134,9 @@ void PreferencesDialog::populateSkins()
     for (const QString &p : defaultCandidates) {
         QDir d(p);
         if (d.exists()) {
-            QStringList bmps = d.entryList(QStringList() << "*.bmp" << "*.BMP", QDir::Files);
-            if (!bmps.isEmpty()) {
+            // Require MAIN.BMP to consider it a valid default skin
+            QStringList mainBmp = d.entryList(QStringList() << "MAIN.BMP" << "main.bmp" << "Main.bmp", QDir::Files);
+            if (!mainBmp.isEmpty()) {
                 defaultSkinPath = d.absolutePath();
                 break;
             }
