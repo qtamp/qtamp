@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
@@ -18,9 +19,32 @@
 #ifdef WINAMP_HAVE_WASABIQT
 #  include <WasabiQt/SkinXml.h>
 #  include <WasabiQt/SkinView.h>
+#  include <WasabiQt/Layout.h>
+#  include <WasabiQt/BitmapRegistry.h>
+#  include <QAudioOutput>
+#  include <QFileDialog>
+#  include <QImage>
 #  include <QKeyEvent>
+#  include <QMediaPlayer>
 #  include <QMouseEvent>
+#  include <QStandardPaths>
+#  include <QUrl>
 #  include <QWindow>
+namespace {
+// Resolver passed to qtWasabi's Layout::hitTest so widgets that
+// take their pixel size from a named bitmap (typical for buttons)
+// hit-test correctly.
+QSize qtampImageSize(const QString &bitmapId, void *userdata) {
+    auto *registry = static_cast<WasabiQt::BitmapRegistry *>(userdata);
+    if (!registry) return QSize();
+    const auto *def = registry->find(bitmapId);
+    if (!def) return QSize();
+    if (!def->srcRect.isEmpty()) return def->srcRect.size();
+    // Whole-image: load the image once and return its size.
+    QImage img = registry->imageFor(*def);
+    return img.size();
+}
+}  // namespace
 #endif
 
 #ifdef WINAMP_HAVE_WASABIQT
@@ -36,12 +60,25 @@ public:
         : WasabiQt::SkinView(parent) {
         setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
         setAttribute(Qt::WA_TranslucentBackground);
+        m_player.setAudioOutput(&m_audio);
+        m_audio.setVolume(qreal(0.7));
     }
 
 protected:
     void mousePressEvent(QMouseEvent *e) override {
         if (e->button() == Qt::LeftButton) {
-            // Wayland / native system-move when available.
+            // Hit-test against the resolved layout — if a widget
+            // with a known action= caught the click, dispatch it.
+            const QPoint p = e->position().toPoint();
+            const auto *hit = WasabiQt::Layout::hitTest(
+                tree(), p, /*actionOnly=*/true,
+                qtampImageSize, &registry());
+            if (hit) {
+                const QString action =
+                    hit->attrs.value(QStringLiteral("action"));
+                if (dispatchAction(action.toUpper())) return;
+            }
+            // Empty-area click — start a window drag.
             if (windowHandle() && windowHandle()->startSystemMove())
                 return;
             m_dragOrigin = e->globalPosition().toPoint() -
@@ -69,6 +106,34 @@ protected:
     }
 
 private:
+    bool dispatchAction(const QString &action) {
+        fprintf(stderr, "[qtamp] action: %s\n",
+                action.toLocal8Bit().constData());
+        if (action == QLatin1String("PLAY"))     { m_player.play();  return true; }
+        if (action == QLatin1String("PAUSE"))    { m_player.pause(); return true; }
+        if (action == QLatin1String("STOP"))     { m_player.stop();  return true; }
+        if (action == QLatin1String("EJECT"))    { openFileDialog(); return true; }
+        if (action == QLatin1String("CLOSE"))    { close();          return true; }
+        if (action == QLatin1String("MINIMIZE")) { showMinimized();  return true; }
+        if (action == QLatin1String("NEXT"))     { /* TODO: playlist */ return true; }
+        if (action == QLatin1String("PREV"))     { /* TODO: playlist */ return true; }
+        return false;
+    }
+
+    void openFileDialog() {
+        const QString musicDir = QStandardPaths::writableLocation(
+            QStandardPaths::MusicLocation);
+        const QString path = QFileDialog::getOpenFileName(
+            this, "Qtamp — Open audio file", musicDir,
+            "Audio (*.mp3 *.flac *.ogg *.opus *.wav *.m4a *.aac);;"
+            "All files (*)");
+        if (path.isEmpty()) return;
+        m_player.setSource(QUrl::fromLocalFile(path));
+        m_player.play();
+    }
+
+    QMediaPlayer m_player;
+    QAudioOutput m_audio;
     QPoint m_dragOrigin;
     bool   m_dragging = false;
 };
@@ -97,12 +162,24 @@ QString takeModernSkinArg(int &argc, char **argv) {
 QString takeScreenshotArg(int &argc, char **argv) {
     return takeStringArg(argc, argv, "--screenshot");
 }
+bool takeFlag(int &argc, char **argv, const char *flag) {
+    for (int i = 1; i < argc; ++i) {
+        if (QString::fromLocal8Bit(argv[i]) == QLatin1String(flag)) {
+            for (int j = i; j + 1 < argc; ++j) argv[j] = argv[j + 1];
+            argc -= 1;
+            argv[argc] = nullptr;
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 int main(int argc, char *argv[]) {
   QString modernSkinPath = takeModernSkinArg(argc, argv);
   QString screenshotPath = takeScreenshotArg(argc, argv);
-
+  const bool listActions = takeFlag(argc, argv, "--list-actions");
   QApplication app(argc, argv);
   app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
@@ -125,14 +202,49 @@ int main(int argc, char *argv[]) {
     WasabiQt::SkinXml::Document doc;
     QString err;
     if (!WasabiQt::SkinXml::parse(skinXml, doc, &err)) {
-      qWarning() << "qtamp: parse failed:" << err;
+      fprintf(stderr, "qtamp: parse failed: %s\n", err.toLocal8Bit().constData());
       return 3;
     }
 
     auto *view = new QtampPlayerWindow();
     if (!view->load(doc, "main", "normal", &err)) {
-      qWarning() << "qtamp: layout load failed:" << err;
+      fprintf(stderr, "qtamp: layout load failed: %s\n", err.toLocal8Bit().constData());
       return 4;
+    }
+
+    if (listActions) {
+      // Probe hit-test at known coords for each transport button —
+      // verifies the qtWasabi hit-test + image-size resolver chain
+      // headlessly, no display required.
+      static const struct { QPoint p; const char *expect; } probes[] = {
+          {{50, 110},  "PLAY"},
+          {{15, 9},    "SYSMENU"},
+          {{340, 9},   "CLOSE"},
+          {{50, 200},  "(no hit)"},  // empty area
+          {{20, 110},  "PREV"},
+          {{80, 110},  "PAUSE"},
+          {{110, 110}, "STOP"},
+          {{140, 110}, "NEXT"},
+      };
+      int passed = 0, failed = 0;
+      for (const auto &probe : probes) {
+        const auto *hit = WasabiQt::Layout::hitTest(
+            view->tree(), probe.p, /*actionOnly=*/true,
+            qtampImageSize, &view->registry());
+        const QByteArray got = hit
+            ? hit->attrs.value(QStringLiteral("action")).toLocal8Bit()
+            : QByteArray("(no hit)");
+        const bool ok = got == QByteArray(probe.expect);
+        fprintf(stderr, "  %s probe (%d,%d) -> %s  (expected %s)\n",
+                ok ? "PASS" : "FAIL",
+                probe.p.x(), probe.p.y(),
+                got.constData(), probe.expect);
+        ok ? ++passed : ++failed;
+      }
+      fprintf(stderr, "qtamp: %d/%lu probes passed\n",
+              passed, (unsigned long)(sizeof(probes) / sizeof(probes[0])));
+      delete view;
+      return failed == 0 ? 0 : 6;
     }
     view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
     view->resize(view->layoutNativeSize());
