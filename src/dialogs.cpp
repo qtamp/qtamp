@@ -304,8 +304,8 @@ AboutDialog::AboutDialog(const QString &skinPath, QWidget *parent) : QDialog(par
     // Credits text (from original creditsrend.c)
     credits = QStringList()
         << "Winamp v5.9.0\n    The Credits"
-        << "Linux Qt6 Port:\n    Kristopher Craig"
-        << "Winamp for Linux\n    Qt6 Native Port"
+        << "Linux Qt5/Qt6 Port:\n    Kristopher Craig"
+        << "Winamp for Linux\n    Qt5/Qt6 Native Port"
         << "Original Development:\n Quentin Hebette, Thierry Honore,\n Lionel Peeters, Hakan Danisik,\n Eddy Richman, Jef Mauguit"
         << "QA, Engineering & Support:\n    DJ Egg"
         << "Freeform Skin Engine:\n    Linus Brolin"
@@ -503,7 +503,7 @@ void AboutDialog::paintEvent(QPaintEvent *)
     // === Bottom bar: "Winamp v5.9.0" ===
     p.setPen(QColor(100, 100, 100));
     p.setFont(QFont("Tahoma", 8));
-    p.drawText(0, h - 18, w, 15, Qt::AlignCenter, "Winamp v5.9.0 for Linux — Qt6 Native Port");
+    p.drawText(0, h - 18, w, 15, Qt::AlignCenter, "Winamp v5.9.0 for Linux — Qt5/Qt6 Native Port");
 }
 
 void AboutDialog::keyPressEvent(QKeyEvent *e)
@@ -928,7 +928,7 @@ QWidget *PreferencesDialog::createModernSkinsPage()
 
     QLabel *notice = new QLabel(
         "⚠️  <b>Modern skins are not yet supported on Linux.</b>\n\n"
-        "The Wasabi/Bento XML skin engine has not been fully ported to Qt6.\n"
+        "The Wasabi/Bento XML skin engine has not been fully ported.\n"
         "Please use a Classic skin (.wsz) instead.\n\n"
         "Modern skin support is planned for a future release.",
         page
@@ -1103,7 +1103,7 @@ QWidget *PreferencesDialog::createPluginsPage()
     layout->addSpacing(10);
     layout->addWidget(new QLabel("Plug-in architecture is not yet available on Linux.\n\n"
                                  "Currently using:\n"
-                                 "  • Qt6 Multimedia for audio decoding & output\n"
+                                 "  • Qt5/Qt6 Multimedia for audio decoding & output\n"
                                  "  • projectM for Milkdrop visualization\n\n"
                                  "Future support planned for:\n"
                                  "  • Input plug-ins (in_*.so)\n"
