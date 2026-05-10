@@ -1,0 +1,99 @@
+Qtamp licensing and provenance
+==============================
+
+This document explains the licensing situation around Qtamp as a
+project, what is in this repository and how it is licensed, and what
+you need to fetch yourself in order to build it.
+
+
+Code in this repository
+-----------------------
+
+Qtamp's git history begins as a rewrite of the Qt-native Winamp port
+formerly hosted at https://github.com/lord3nd3r/winamp-linux. Every
+path that originated from the Llama Group's 2024 Winamp open-source
+release (the upstream `Src/`, `lang/`, `Qt/`, `BuildTools/`,
+`packaging/`, the `LICENSE.md` containing the Winamp Collaborative
+License, and a number of Win32-specific build files) was removed from
+every commit before publication. None of those files exist in this
+repository's working tree, packed objects, or pack indexes.
+
+What remains in the imported history is the Qt-native port code
+authored by 3nd3r (lord3nd3r) — primarily the contents of `src/`,
+the root `CMakeLists.txt`, `build_linux.sh`, `README_LINUX.md`, and
+the `.github/` CI workflow. 3nd3r has explicitly granted permission
+to relicense those contributions under the MIT License for inclusion
+in Qtamp; see `LICENSES/lord3nd3r/MIT`.
+
+Everything else in this repository is original work authored by
+Qtamp contributors under the MIT License; see
+`LICENSES/preferred/MIT`.
+
+Therefore every file you find in this repository is MIT-licensed.
+
+
+Code that is NOT in this repository
+-----------------------------------
+
+Qtamp is the reference embedder for qtWasabi (the open-source
+continuation of the Wasabi/Maki skin engine that Winamp shipped).
+Qtamp links against qtWasabi at build time. qtWasabi in turn embeds
+the Maki bytecode VM and a small portable subset of Wasabi's
+foundation classes (BFC) from the official 2024 Llama Group Winamp
+open-source release. None of that source lives here.
+
+To build Qtamp end-to-end:
+
+  1. Run scripts/fetch-deps.sh. The script clones qtWasabi into
+     deps/qtWasabi (gitignored) and invokes qtWasabi's own
+     scripts/fetch-wasabi.sh to download the Llama Group release
+     into deps/qtWasabi/wasabi-src/ (also gitignored).
+  2. The build links qtWasabi (MIT) into the Qtamp binary on your
+     local machine. qtWasabi in turn statically pulls in the
+     Maki VM and BFC subset from your local Wasabi source tree.
+  3. The license governing the linked-in Winamp pieces is whichever
+     license the Llama Group ships with the official source release.
+     Read the LICENSE.md file inside that release for the exact
+     terms. Honouring those terms is your responsibility as the
+     person doing the build.
+
+This is the same model qtWasabi uses, and the same model console
+emulators use for BIOS files: the framework code is freely
+distributable under its own license, the machine-specific files
+come from the user.
+
+
+Third-party libraries linked at runtime
+---------------------------------------
+
+  qtWasabi          MIT, fetched at build time, see
+                    https://github.com/qtWasabi/qtWasabi
+  Qt 6              dual-licensed LGPLv3 / commercial; Qtamp links
+                    dynamically under the LGPLv3 terms
+  FluidSynth        LGPL-2.1-or-later; Qtamp links dynamically for
+                    MIDI playback (in_midi plugin)
+  RtMidi            MIT; Qtamp links dynamically for MIDI controller
+                    input
+  FFmpeg            (via Qt 6.5+ Multimedia) LGPL-2.1+; Qtamp links
+                    dynamically for the in_ffmpeg input plugin
+
+None of these libraries ship as source in this repository. All are
+fetched by the system package manager, by Qt's own bundling, or by
+scripts/fetch-deps.sh.
+
+
+Summary
+-------
+
+  Qtamp (this repository)
+      MIT, see LICENSES/preferred/MIT and LICENSES/lord3nd3r/MIT.
+
+  qtWasabi
+      MIT, fetched into deps/qtWasabi at build time.
+
+  Maki VM and BFC subset
+      Official Winamp open-source release, fetched at build time
+      via qtWasabi's scripts/fetch-wasabi.sh, governed by the
+      license shipped with that release.
+
+  No Winamp or Wasabi source in this repository or its git history.

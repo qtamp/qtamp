@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
-project(Winamp VERSION 0.5.0 LANGUAGES CXX)
+project(Qtamp VERSION 0.0.1 LANGUAGES CXX
+        DESCRIPTION "Qt-native music player and reference embedder for qtWasabi"
+        HOMEPAGE_URL "https://github.com/kleberbaum/qtamp")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,7 +42,7 @@ else()
     message(STATUS "libprojectM not found — MilkDrop visualizations disabled")
 endif()
 
-add_executable(winamp
+add_executable(qtamp
     src/main.cpp
     src/eq10dsp.cpp
     src/skinutils.cpp
@@ -60,9 +62,9 @@ add_executable(winamp
     src/winampwindow.cpp
 )
 
-target_include_directories(winamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(qtamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-target_link_libraries(winamp
+target_link_libraries(qtamp
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Gui
     Qt${QT_VERSION_MAJOR}::Widgets
@@ -72,20 +74,20 @@ target_link_libraries(winamp
 )
 # Qt6 splits OpenGLWidgets into its own module; Qt5 includes it in Widgets
 if(QT_VERSION_MAJOR EQUAL 6)
-    target_link_libraries(winamp Qt6::OpenGLWidgets)
+    target_link_libraries(qtamp Qt6::OpenGLWidgets)
 endif()
 
-# Set RPATH so the binary finds bundled libs in /usr/lib/winamp/
-set_target_properties(winamp PROPERTIES
-    INSTALL_RPATH "$ORIGIN/../lib/winamp"
+# Set RPATH so the binary finds bundled libs in /usr/lib/qtamp/
+set_target_properties(qtamp PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../lib/qtamp"
     BUILD_WITH_INSTALL_RPATH OFF
     INSTALL_RPATH_USE_LINK_DIRECTORIES TRUE
 )
 
 # Conditionally link projectM if available
 if(PROJECTM_LIB)
-    target_link_libraries(winamp ${PROJECTM_LIB})
-    target_compile_definitions(winamp PRIVATE HAVE_PROJECTM)
+    target_link_libraries(qtamp ${PROJECTM_LIB})
+    target_compile_definitions(qtamp PRIVATE HAVE_PROJECTM)
 
     # Bundle libprojectM and its non-standard dependencies
     # so target systems don't need libprojectm-dev installed
@@ -95,89 +97,71 @@ if(PROJECTM_LIB)
     file(GLOB FTGL_SO_FILES "/usr/lib/libftgl.so*" "/usr/lib/x86_64-linux-gnu/libftgl.so*")
     file(GLOB GLEW_SO_FILES "/usr/lib/libGLEW.so*" "/usr/lib/x86_64-linux-gnu/libGLEW.so*")
     if(PROJECTM_SO_FILES)
-        install(FILES ${PROJECTM_SO_FILES} DESTINATION lib/winamp)
+        install(FILES ${PROJECTM_SO_FILES} DESTINATION lib/qtamp)
     endif()
     if(FTGL_SO_FILES)
-        install(FILES ${FTGL_SO_FILES} DESTINATION lib/winamp)
+        install(FILES ${FTGL_SO_FILES} DESTINATION lib/qtamp)
     endif()
     if(GLEW_SO_FILES)
-        install(FILES ${GLEW_SO_FILES} DESTINATION lib/winamp)
+        install(FILES ${GLEW_SO_FILES} DESTINATION lib/qtamp)
     endif()
 
     # Bundle projectM presets
     if(EXISTS /usr/share/projectM/presets)
         install(DIRECTORY /usr/share/projectM/presets
-                DESTINATION share/winamp/projectM)
+                DESTINATION share/qtamp/projectM)
     elseif(EXISTS /usr/share/projectm/presets)
         install(DIRECTORY /usr/share/projectm/presets
-                DESTINATION share/winamp/projectM)
+                DESTINATION share/qtamp/projectM)
     endif()
     if(EXISTS /usr/share/projectM/config.inp)
         install(FILES /usr/share/projectM/config.inp
-                DESTINATION share/winamp/projectM)
+                DESTINATION share/qtamp/projectM)
     elseif(EXISTS /usr/share/projectm/config.inp)
         install(FILES /usr/share/projectm/config.inp
-                DESTINATION share/winamp/projectM)
+                DESTINATION share/qtamp/projectM)
     endif()
 endif()
 
 # Conditionally link Qt DBus if available
 if(QT_VERSION_MAJOR EQUAL 6 AND Qt6DBus_FOUND)
-    target_link_libraries(winamp Qt6::DBus)
-    target_compile_definitions(winamp PRIVATE QT_DBUS_LIB)
+    target_link_libraries(qtamp Qt6::DBus)
+    target_compile_definitions(qtamp PRIVATE QT_DBUS_LIB)
 elseif(QT_VERSION_MAJOR EQUAL 5 AND Qt5DBus_FOUND)
-    target_link_libraries(winamp Qt5::DBus)
-    target_compile_definitions(winamp PRIVATE QT_DBUS_LIB)
+    target_link_libraries(qtamp Qt5::DBus)
+    target_compile_definitions(qtamp PRIVATE QT_DBUS_LIB)
 endif()
 
-install(TARGETS winamp RUNTIME DESTINATION bin)
-install(DIRECTORY skins/ DESTINATION share/winamp/skins)
-install(DIRECTORY lang/ DESTINATION share/winamp/lang)
-if(EXISTS "${CMAKE_SOURCE_DIR}/Src/Winamp/resource")
-    install(DIRECTORY Src/Winamp/resource/ DESTINATION share/winamp/resource)
-endif()
+install(TARGETS qtamp RUNTIME DESTINATION bin)
 
-# Desktop integration files
-install(FILES packaging/winamp.desktop DESTINATION share/applications)
-install(FILES packaging/org.winamp.Winamp.metainfo.xml DESTINATION share/metainfo)
-
-# Install icons at all standard sizes (PNG for Linux desktop integration)
-install(FILES packaging/icons/winamp_16.png DESTINATION share/icons/hicolor/16x16/apps RENAME winamp.png)
-install(FILES packaging/icons/winamp_24.png DESTINATION share/icons/hicolor/24x24/apps RENAME winamp.png)
-install(FILES packaging/icons/winamp_32.png DESTINATION share/icons/hicolor/32x32/apps RENAME winamp.png)
-install(FILES packaging/icons/winamp_48.png DESTINATION share/icons/hicolor/48x48/apps RENAME winamp.png)
-install(FILES packaging/icons/winamp_64.png DESTINATION share/icons/hicolor/64x64/apps RENAME winamp.png)
-install(FILES packaging/icons/winamp_128.png DESTINATION share/icons/hicolor/128x128/apps RENAME winamp.png)
-install(FILES packaging/icons/winamp_256.png DESTINATION share/icons/hicolor/256x256/apps RENAME winamp.png)
+# Skin / language / icon resources lived under skins/, lang/, and
+# packaging/ in the upstream Winamp port.  Those paths originated
+# in the WCL-licensed Llama Group source release and were stripped
+# from Qtamp's git history; restoring them is a future milestone
+# (Qtamp will ship its own MIT-licensed icon set + .desktop file
+# when the packaging pass lands).
 
 # ──────────────────────────────────────────────
-# CPack — generate .deb, .rpm, and .tar.gz
+# CPack — generate .tar.gz
 # ──────────────────────────────────────────────
-set(CPACK_PACKAGE_NAME "winamp")
-set(CPACK_PACKAGE_VERSION "0.5.0")
-set(CPACK_PACKAGE_RELEASE "beta1")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Winamp media player for Linux (Qt6 port)")
-set(CPACK_PACKAGE_DESCRIPTION "A native Linux port of the legendary Winamp media player using Qt6. Features the classic Winamp look and feel with support for classic skins, equalizer, playlist editor, media library, and MilkDrop visualizations via projectM.")
-set(CPACK_PACKAGE_VENDOR "Nullsoft")
-set(CPACK_PACKAGE_CONTACT "lord3nd3r@github.com")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/lord3nd3r/winamp-linux")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.md")
-set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_PACKAGE_RELEASE}-${CMAKE_SYSTEM_PROCESSOR}")
+set(CPACK_PACKAGE_NAME "qtamp")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Qt-native music player and reference embedder for qtWasabi")
+set(CPACK_PACKAGE_DESCRIPTION "Qtamp is a Qt6-native music player and the reference embedder for qtWasabi, the open-source continuation of Wasabi (Winamp's Modern skin engine). Plays MP3 / FLAC / OGG / Opus / WAV / MIDI; supports Modern Winamp skins via qtWasabi.")
+set(CPACK_PACKAGE_VENDOR "Florian Kleber")
+set(CPACK_PACKAGE_CONTACT "kleber@snek.at")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/kleberbaum/qtamp")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/COPYING")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_PROCESSOR}")
 
-# DEB-specific
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "lord3nd3r <lord3nd3r@github.com>")
+set(CPACK_RPM_PACKAGE_LICENSE "MIT")
+set(CPACK_RPM_PACKAGE_GROUP "Applications/Multimedia")
+set(CPACK_RPM_PACKAGE_URL "${CPACK_PACKAGE_HOMEPAGE_URL}")
+
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Florian Kleber <kleber@snek.at>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-set(CPACK_DEBIAN_PACKAGE_DEPENDS "libqt6core6 (>= 6.2), libqt6gui6 (>= 6.2), libqt6widgets6 (>= 6.2), libqt6multimedia6 (>= 6.2), libqt6opengl6 (>= 6.2), libprojectm-dev, libgl1-mesa-glx | libgl1")
-set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/lord3nd3r/winamp-linux")
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
 
-# RPM-specific
-set(CPACK_RPM_PACKAGE_LICENSE "GPLv2")
-set(CPACK_RPM_PACKAGE_GROUP "Applications/Multimedia")
-set(CPACK_RPM_PACKAGE_REQUIRES "qt6-qtbase >= 6.2, qt6-qtmultimedia >= 6.2, mesa-libGL, libprojectM")
-set(CPACK_RPM_PACKAGE_URL "https://github.com/lord3nd3r/winamp-linux")
-
-# Generator list
 set(CPACK_GENERATOR "TGZ")
-
 include(CPack)
