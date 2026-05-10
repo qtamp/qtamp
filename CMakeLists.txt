@@ -133,7 +133,9 @@ endif()
 install(TARGETS winamp RUNTIME DESTINATION bin)
 install(DIRECTORY skins/ DESTINATION share/winamp/skins)
 install(DIRECTORY lang/ DESTINATION share/winamp/lang)
-install(DIRECTORY Src/Winamp/resource/ DESTINATION share/winamp/resource)
+if(EXISTS "${CMAKE_SOURCE_DIR}/Src/Winamp/resource")
+    install(DIRECTORY Src/Winamp/resource/ DESTINATION share/winamp/resource)
+endif()
 
 # Desktop integration files
 install(FILES packaging/winamp.desktop DESTINATION share/applications)

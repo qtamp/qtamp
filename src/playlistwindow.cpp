@@ -599,34 +599,38 @@ void PlaylistWindow::updateTotalTimeDisplay() {
 }
 
 void PlaylistWindow::addTrack(const QString &filePath) {
+    bool isUrl = filePath.startsWith("http://") || filePath.startsWith("https://")
+              || filePath.startsWith("rtsp://") || filePath.startsWith("mms://");
     QFileInfo fileInfo(filePath);
-    if (fileInfo.exists() && fileInfo.isFile()) {
-        QListWidgetItem *item = new QListWidgetItem(trackDisplayName(tracks.size(), filePath));
-        item->setData(Qt::UserRole, filePath); // Store full file path for drag-out
+    if (isUrl || (fileInfo.exists() && fileInfo.isFile())) {
+        QString displayName = isUrl ? filePath : trackDisplayName(tracks.size(), filePath);
+        QListWidgetItem *item = new QListWidgetItem(displayName);
+        item->setData(Qt::UserRole, filePath); // Store full path/URL for drag-out
         // ensure item supports internal drag/drop as well as drag-out
         item->setFlags(item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
         listWidget->addItem(item);
         tracks.append(filePath);
         trackDurations.append(0); // placeholder until async probe completes
 
-        // Probe duration asynchronously to avoid re-entrant event loop crashes
-        // (the old blocking QEventLoop could crash when called during drag-drop)
-        int trackIndex = tracks.size() - 1;
-        QMediaPlayer *probe = new QMediaPlayer(this);
+        // Probe duration asynchronously (only for local files — streams have no fixed duration)
+        if (!isUrl) {
+            int trackIndex = tracks.size() - 1;
+            QMediaPlayer *probe = new QMediaPlayer(this);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        probe->setSource(QUrl::fromLocalFile(filePath));
+            probe->setSource(QUrl::fromLocalFile(filePath));
 #else
-        probe->setMedia(QMediaContent(QUrl::fromLocalFile(filePath)));
+            probe->setMedia(QMediaContent(QUrl::fromLocalFile(filePath)));
 #endif
-        connect(probe, &QMediaPlayer::mediaStatusChanged, this, [this, probe, trackIndex](QMediaPlayer::MediaStatus status){
-            if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::InvalidMedia) {
-                if (trackIndex < trackDurations.size()) {
-                    trackDurations[trackIndex] = (status == QMediaPlayer::LoadedMedia) ? probe->duration() : 0;
-                    updateTotalTimeDisplay();
+            connect(probe, &QMediaPlayer::mediaStatusChanged, this, [this, probe, trackIndex](QMediaPlayer::MediaStatus status){
+                if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::InvalidMedia) {
+                    if (trackIndex < trackDurations.size()) {
+                        trackDurations[trackIndex] = (status == QMediaPlayer::LoadedMedia) ? probe->duration() : 0;
+                        updateTotalTimeDisplay();
+                    }
+                    probe->deleteLater();
                 }
-                probe->deleteLater();
-            }
-        });
+            });
+        }
     }
 }
 

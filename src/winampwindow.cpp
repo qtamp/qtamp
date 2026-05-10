@@ -2641,37 +2641,48 @@ void WinampWindow::preloadNextTrack() {
 // playTrack / applyVolume / updateDisplay / getButtonAt
 // ============================================================================
 void WinampWindow::playTrack(const QString &fileName) {
-    if (!fileName.isEmpty() && QFile::exists(fileName)) {
-        currentFile = fileName;
-        // Reset media info — will be refreshed by metaDataChanged and processAudioBuffer
-        mediaBitrate = 0;
-        mediaSampleRate = 0;
-        mediaChannels = 0;
-        metaTitle.clear();
+    if (fileName.isEmpty()) return;
 
-        // Auto-load EQ preset if AUTO is enabled (matches Windows eq_autoload from Play.cpp line 58)
-        if (eqWindow && eqWindow->isAutoEnabled()) {
-            eqWindow->autoLoadPreset(fileName);
-        }
+    bool isUrl = fileName.startsWith("http://") || fileName.startsWith("https://")
+              || fileName.startsWith("rtsp://") || fileName.startsWith("mms://");
+
+    if (!isUrl && !QFile::exists(fileName)) return;
+
+    // For URLs, delegate to playUrl which handles stream setup
+    if (isUrl) {
+        playUrl(fileName);
+        return;
+    }
+
+    currentFile = fileName;
+    // Reset media info — will be refreshed by metaDataChanged and processAudioBuffer
+    mediaBitrate = 0;
+    mediaSampleRate = 0;
+    mediaChannels = 0;
+    metaTitle.clear();
+
+    // Auto-load EQ preset if AUTO is enabled (matches Windows eq_autoload from Play.cpp line 58)
+    if (eqWindow && eqWindow->isAutoEnabled()) {
+        eqWindow->autoLoadPreset(fileName);
+    }
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        player->setSource(QUrl::fromLocalFile(fileName));
+    player->setSource(QUrl::fromLocalFile(fileName));
 #else
-        player->setMedia(QMediaContent(QUrl::fromLocalFile(fileName)));
+    player->setMedia(QMediaContent(QUrl::fromLocalFile(fileName)));
 #endif
-        player->play();
-        RecentFilesManager::instance().addFile(fileName);
-        updateTrayTooltip();
+    player->play();
+    RecentFilesManager::instance().addFile(fileName);
+    updateTrayTooltip();
 
-        // Show song change notification (matches Windows balloon tooltips)
-        if (showSongNotifications && trayIcon) {
-            QString title = metaTitle.isEmpty() ? QFileInfo(fileName).completeBaseName() : metaTitle;
-            trayIcon->showMessage("Winamp", title, QSystemTrayIcon::Information, 3000);
-        }
-
-        // Preload next track for gapless playback
-        preloadNextTrack();
+    // Show song change notification (matches Windows balloon tooltips)
+    if (showSongNotifications && trayIcon) {
+        QString title = metaTitle.isEmpty() ? QFileInfo(fileName).completeBaseName() : metaTitle;
+        trayIcon->showMessage("Winamp", title, QSystemTrayIcon::Information, 3000);
     }
+
+    // Preload next track for gapless playback
+    preloadNextTrack();
 }
 
 // Apply volume to audio outputs — respects EQ DSP path
