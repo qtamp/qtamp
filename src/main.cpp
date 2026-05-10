@@ -128,10 +128,10 @@ public:
         setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
         setAttribute(Qt::WA_TranslucentBackground);
 
-        // qtWasabi's default DisplayResolver knows the standard
-        // Wasabi display keys (time / songtitle / kbps / khz / …)
-        // and pulls them from the Host.
-        setDisplayResolver(WasabiQt::makeDefaultDisplayResolver(host));
+        // Hand the Host to SkinView — paintEvent pulls live
+        // display strings AND <slider> thumb positions straight
+        // from it.  Supersedes setDisplayResolver().
+        setHost(host);
 
         // 200ms repaint cadence so the time text ticks visibly
         // while playback is running.
@@ -151,14 +151,24 @@ public:
 protected:
     void mousePressEvent(QMouseEvent *e) override {
         if (e->button() == Qt::LeftButton) {
-            // Hit-test against the resolved layout; if a widget
-            // with action= caught the click, hand to qtWasabi's
-            // default action dispatcher.
             const QPoint p = e->position().toPoint();
+            QRect hitBbox;
             const auto *hit = WasabiQt::Layout::hitTest(
                 tree(), p, /*actionOnly=*/true,
-                qtampImageSize, &registry());
+                qtampImageSize, &registry(), &hitBbox);
             if (hit) {
+                // <slider> widgets — drag-to-set instead of
+                // dispatchAction.  Click jumps the thumb to the
+                // click position; mouseMove follows.
+                if (hit->tag == QLatin1String("slider")) {
+                    m_sliderAction = hit->attrs
+                        .value(QStringLiteral("action")).toUpper();
+                    m_sliderTrack = hitBbox;
+                    applySliderDrag(p.x());
+                    update();
+                    return;
+                }
+                // Buttons / togglebuttons → action dispatch.
                 const QString action =
                     hit->attrs.value(QStringLiteral("action"));
                 fprintf(stderr, "[qtamp] action: %s\n",
@@ -176,6 +186,12 @@ protected:
         WasabiQt::SkinView::mousePressEvent(e);
     }
     void mouseMoveEvent(QMouseEvent *e) override {
+        if (!m_sliderAction.isEmpty() &&
+            (e->buttons() & Qt::LeftButton)) {
+            applySliderDrag(e->position().toPoint().x());
+            update();
+            return;
+        }
         if (m_dragging && (e->buttons() & Qt::LeftButton)) {
             move(e->globalPosition().toPoint() - m_dragOrigin);
         }
@@ -183,6 +199,7 @@ protected:
     }
     void mouseReleaseEvent(QMouseEvent *e) override {
         m_dragging = false;
+        m_sliderAction.clear();
         WasabiQt::SkinView::mouseReleaseEvent(e);
     }
     void keyPressEvent(QKeyEvent *e) override {
@@ -207,9 +224,19 @@ protected:
     }
 
 private:
+    void applySliderDrag(int xInWindow) {
+        if (m_sliderTrack.width() <= 0) return;
+        const double v = double(xInWindow - m_sliderTrack.x()) /
+                         double(m_sliderTrack.width());
+        m_host->setSliderPosition(m_sliderAction,
+                                   qBound(0.0, v, 1.0));
+    }
+
     QtampHost *m_host = nullptr;
     QPoint     m_dragOrigin;
     bool       m_dragging = false;
+    QString    m_sliderAction;     // empty when not dragging a slider
+    QRect      m_sliderTrack;
 };
 
 // ── QtampHost methods that need QtampPlayerWindow to be defined ──
