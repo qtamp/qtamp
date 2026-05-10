@@ -7,6 +7,7 @@
 #include <QIcon>
 #include <QSettings>
 #include <QSplashScreen>
+#include <QSurfaceFormat>
 #include <QTimer>
 
 #include "playlistwindow.h"
@@ -367,6 +368,18 @@ int main(int argc, char *argv[]) {
   QString modernSkinPath = takeModernSkinArg(argc, argv);
   QString screenshotPath = takeScreenshotArg(argc, argv);
   const bool listActions = takeFlag(argc, argv, "--list-actions");
+
+  // Modern skins paint their own rounded chrome with alpha-cut
+  // corners — the host surface needs an alpha channel for those
+  // pixels to actually composite transparently.  Must be set
+  // BEFORE QApplication or Wayland gives us an opaque surface
+  // and the corners come out as black squares.
+  {
+      QSurfaceFormat fmt = QSurfaceFormat::defaultFormat();
+      fmt.setAlphaBufferSize(8);
+      QSurfaceFormat::setDefaultFormat(fmt);
+  }
+
   QApplication app(argc, argv);
   app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
