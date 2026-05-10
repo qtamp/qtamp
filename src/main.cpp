@@ -15,11 +15,75 @@
 #include "winampwindow.h"
 #include "qt5compat.h"
 
+#ifdef WINAMP_HAVE_WASABIQT
+#  include <WasabiQt/SkinXml.h>
+#  include <WasabiQt/SkinView.h>
+#endif
+
+namespace {
+// Pull --modern-skin <path> out of argv before the rest of the
+// player's arg parsing runs.  The arg gets stripped from argv so the
+// existing classic-skin code never sees it.
+QString takeModernSkinArg(int &argc, char **argv) {
+    for (int i = 1; i < argc; ++i) {
+        const QString a = QString::fromLocal8Bit(argv[i]);
+        if (a == "--modern-skin" && i + 1 < argc) {
+            const QString skin = QString::fromLocal8Bit(argv[i + 1]);
+            for (int j = i; j + 2 < argc; ++j) argv[j] = argv[j + 2];
+            argc -= 2;
+            argv[argc] = nullptr;
+            return skin;
+        }
+    }
+    return {};
+}
+}  // namespace
+
 int main(int argc, char *argv[]) {
+  QString modernSkinPath = takeModernSkinArg(argc, argv);
+
   QApplication app(argc, argv);
   app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
   app.setOrganizationName("Qtamp");
+
+#ifdef WINAMP_HAVE_WASABIQT
+  // Modern-skin path — bypass the classic-skin chrome entirely and
+  // hand the rendering over to qtWasabi's SkinView.  Accepts either
+  // a path to skin.xml or a directory containing one.
+  if (!modernSkinPath.isEmpty()) {
+    QString skinXml = modernSkinPath;
+    if (QFileInfo(skinXml).isDir()) {
+      skinXml = QDir(skinXml).filePath("skin.xml");
+    }
+    if (!QFile::exists(skinXml)) {
+      qWarning() << "qtamp: modern skin not found at" << skinXml;
+      return 2;
+    }
+
+    WasabiQt::SkinXml::Document doc;
+    QString err;
+    if (!WasabiQt::SkinXml::parse(skinXml, doc, &err)) {
+      qWarning() << "qtamp: parse failed:" << err;
+      return 3;
+    }
+
+    auto *view = new WasabiQt::SkinView();
+    if (!view->load(doc, "main", "normal", &err)) {
+      qWarning() << "qtamp: layout load failed:" << err;
+      return 4;
+    }
+    view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
+    view->resize(view->layoutNativeSize());
+    view->show();
+    return app.exec();
+  }
+#else
+  if (!modernSkinPath.isEmpty()) {
+    qWarning() << "qtamp: --modern-skin requires building with "
+                  "QTAMP_USE_QTWASABI=ON; ignoring.";
+  }
+#endif
 
   // Load the Winamp icon from the source resource directory
   QString appDir = QCoreApplication::applicationDirPath();
