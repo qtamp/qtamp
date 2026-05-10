@@ -20,6 +20,7 @@
 #ifdef WINAMP_HAVE_WASABIQT
 #  include <WasabiQt/SkinXml.h>
 #  include <WasabiQt/SkinView.h>
+#  include <WasabiQt/SkinRuntime.h>
 #  include <WasabiQt/Layout.h>
 #  include <WasabiQt/BitmapRegistry.h>
 #  include <WasabiQt/Host.h>
@@ -412,6 +413,34 @@ int main(int argc, char *argv[]) {
     if (!view->load(doc, "main", "normal", &err)) {
       fprintf(stderr, "qtamp: layout load failed: %s\n", err.toLocal8Bit().constData());
       return 4;
+    }
+
+    // Drive the chrome.  Two paths:
+    //  1) Apply the static well-known-script equivalents
+    //     (titlebar.m's resizeObjects → streak geometry, etc.) so
+    //     the chrome lays out correctly straight away.
+    //  2) Hand the resolved tree to qtWasabi's SkinRuntime so the
+    //     real .maki bytecode runs through the embedded VM —
+    //     onScriptLoaded handlers get to do their thing, future
+    //     onResize / onSetXuiParam events flow through too.
+    // Set WASABIQT_NO_STATIC_SCRIPTS=1 to skip step 1 (useful for
+    // testing whether Maki dispatch alone produces a sane chrome).
+    {
+        auto &mutableTree = const_cast<WasabiQt::Layout::ResolvedWidget &>(
+            view->tree());
+        if (!::getenv("WASABIQT_NO_STATIC_SCRIPTS")) {
+            const int layoutW = view->layoutNativeSize().width();
+            WasabiQt::Layout::runKnownScripts(mutableTree, layoutW);
+        }
+
+        // Fire the actual Maki scripts.  Errors are non-fatal — if
+        // a binding is missing the runtime logs a guru and moves
+        // on; the static-fallback chrome is still visible.
+        static WasabiQt::SkinRuntime runtime;
+        runtime.loadScripts(doc, mutableTree);
+        runtime.dispatchOnScriptLoaded();
+        runtime.dispatchXuiParams(mutableTree);
+        view->update();
     }
 
     if (listActions) {
