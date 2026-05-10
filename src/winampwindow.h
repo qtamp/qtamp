@@ -106,6 +106,7 @@ protected:
     void dropEvent(QDropEvent *event) override;
     void preloadNextTrack();
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
     void saveAllSettings();
     void loadAllSettings();
 
@@ -183,6 +184,7 @@ private:
     VideoWindow *videoWindow = nullptr;
     MilkdropWindow *milkdropWindow = nullptr;
     MediaLibraryWindow *mediaLibraryWindow = nullptr;
+    QSet<QWidget*> childrenVisibleBeforeMinimize;
     
     // Modern skin engine
     ModernSkinEngine modernSkin;

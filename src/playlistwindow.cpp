@@ -1147,10 +1147,17 @@ void PlaylistWindow::loadSettings(QSettings &s) {
     // Add each saved track back into the playlist
     for (const QString &track : savedTracks) {
         QString trimmed = track.trimmed();
-        if (!trimmed.isEmpty() && QFile::exists(trimmed)) {
-            listWidget->addItem(trackDisplayName(tracks.size(), trimmed));
+        if (trimmed.isEmpty()) continue;
+        bool isUrl = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+                  || trimmed.startsWith("rtsp://") || trimmed.startsWith("mms://");
+        if (isUrl || QFile::exists(trimmed)) {
+            QString displayName = isUrl ? trimmed : trackDisplayName(tracks.size(), trimmed);
+            QListWidgetItem *item = new QListWidgetItem(displayName);
+            item->setData(Qt::UserRole, trimmed);
+            item->setFlags(item->flags() | Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled);
+            listWidget->addItem(item);
             tracks.append(trimmed);
-            trackDurations.append(0); // Duration will be 0 until played
+            trackDurations.append(0);
         }
     }
     updateTotalTimeDisplay();

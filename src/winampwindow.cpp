@@ -2730,6 +2730,36 @@ void WinampWindow::closeEvent(QCloseEvent *event) {
     QApplication::quit();
 }
 
+void WinampWindow::changeEvent(QEvent *event) {
+    if (event->type() == QEvent::WindowStateChange) {
+        // Collect all child windows
+        QList<QWidget*> children;
+        if (playlistWindow) children << playlistWindow;
+        if (eqWindow) children << eqWindow;
+        if (videoWindow) children << videoWindow;
+        if (milkdropWindow) children << milkdropWindow;
+        if (mediaLibraryWindow) children << mediaLibraryWindow;
+
+        if (windowState() & Qt::WindowMinimized) {
+            // Remember which windows were visible, then hide them
+            childrenVisibleBeforeMinimize.clear();
+            for (QWidget *w : children) {
+                if (w->isVisible()) {
+                    childrenVisibleBeforeMinimize.insert(w);
+                    w->hide();
+                }
+            }
+        } else {
+            // Restored — re-show previously visible children
+            for (QWidget *w : childrenVisibleBeforeMinimize) {
+                w->show();
+            }
+            childrenVisibleBeforeMinimize.clear();
+        }
+    }
+    QWidget::changeEvent(event);
+}
+
 void WinampWindow::saveAllSettings() {
     QSettings s(configPath(), QSettings::IniFormat);
 
