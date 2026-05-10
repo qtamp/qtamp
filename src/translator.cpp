@@ -97,14 +97,14 @@ void Translator::loadFromFile(const QString &filePath) {
 
 void Translator::loadEnglishDefaults() {
     // Window titles
-    strings["win.main.title"] = "Winamp 0.5 BETA for Linux";
-    strings["win.playlist.title"] = "Winamp Playlist Editor";
-    strings["win.equalizer.title"] = "Winamp Equalizer";
-    strings["win.video.title"] = "Winamp Video";
-    strings["win.library.title"] = "Winamp Library";
+    strings["win.main.title"] = "Qtamp 0.0.1";
+    strings["win.playlist.title"] = "Qtamp Playlist Editor";
+    strings["win.equalizer.title"] = "Qtamp Equalizer";
+    strings["win.video.title"] = "Qtamp Video";
+    strings["win.library.title"] = "Qtamp Library";
     strings["win.milkdrop.title"] = "Milkdrop Visualization";
-    strings["win.preferences.title"] = "Winamp Preferences";
-    strings["win.about.title"] = "About Winamp";
+    strings["win.preferences.title"] = "Qtamp Preferences";
+    strings["win.about.title"] = "About Qtamp";
     strings["win.fileinfo.title"] = "File Info";
     strings["win.jumpto.title"] = "Jump to File";
     strings["win.playlocation.title"] = "Play Location";

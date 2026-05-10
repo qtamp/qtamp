@@ -25,7 +25,7 @@
 PlaylistWindow::PlaylistWindow(WinampWindow *parent) : QWidget(nullptr), mainWindow(parent) {
     setMinimumSize(275, 116);
     resize(275, 232);
-    setWindowTitle(TR("win.playlist.title", "Winamp Playlist Editor"));
+    setWindowTitle(TR("win.playlist.title", "Qtamp Playlist Editor"));
     setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
     setAcceptDrops(true);  // Accept file drops on playlist window borders/titlebar
     
@@ -660,7 +660,7 @@ void PlaylistWindow::paintEvent(QPaintEvent *event) {
         painter.fillRect(rect(), QColor(0, 0, 0));
         painter.setPen(QColor(0, 255, 0));
         painter.setFont(QFont("Tahoma", 7, QFont::Bold));
-        painter.drawText(6, 10, "Winamp Playlist Editor");
+        painter.drawText(6, 10, "Qtamp Playlist Editor");
         return;
     }
     

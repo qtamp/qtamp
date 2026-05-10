@@ -49,7 +49,7 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
              scrollOffset(0), visMode(1), doubleSize(false), shadeMode(false),
              alwaysOnTop(false), clutterbarOpen(false) {
     setFixedSize(275, 116);
-    setWindowTitle("Winamp 0.5 BETA for Linux");
+    setWindowTitle("Qtamp 0.0.1");
     setWindowFlags(Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground, false);
     setMouseTracking(true);
@@ -211,7 +211,7 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
                 updateTrayTooltip();
                 if (showSongNotifications && trayIcon) {
                     QString title = metaTitle.isEmpty() ? QFileInfo(fileName).completeBaseName() : metaTitle;
-                    trayIcon->showMessage("Winamp", title, QSystemTrayIcon::Information, 3000);
+                    trayIcon->showMessage("Qtamp", title, QSystemTrayIcon::Information, 3000);
                 }
 
                 // Preload the next track
@@ -288,7 +288,7 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
         if (!newMetaTitle.isEmpty() && newMetaTitle != metaTitle) {
             metaTitle = newMetaTitle;
             if (showSongNotifications && trayIcon) {
-                trayIcon->showMessage("Winamp", metaTitle, QSystemTrayIcon::Information, 3000);
+                trayIcon->showMessage("Qtamp", metaTitle, QSystemTrayIcon::Information, 3000);
             }
         } else if (!newMetaTitle.isEmpty()) {
             metaTitle = newMetaTitle;
@@ -405,7 +405,7 @@ void WinampWindow::playUrl(const QString &url) {
         // Show notification for stream
         if (showSongNotifications && trayIcon) {
             QString title = metaTitle.isEmpty() ? url : metaTitle;
-            trayIcon->showMessage("Winamp", title, QSystemTrayIcon::Information, 3000);
+            trayIcon->showMessage("Qtamp", title, QSystemTrayIcon::Information, 3000);
         }
 
         // Don't preload next track for streams
@@ -1275,7 +1275,7 @@ void WinampWindow::paintEvent(QPaintEvent *) {
         p.fillRect(rect(), QColor(66, 66, 99));
         p.setPen(QColor(0, 255, 0));
         p.setFont(QFont("Tahoma", 7, QFont::Bold));
-        p.drawText(10, 14, "Winamp 0.5 BETA for Linux");
+        p.drawText(10, 14, "Qtamp 0.0.1");
         return;
     }
 
@@ -1614,16 +1614,16 @@ void WinampWindow::keyPressEvent(QKeyEvent *event) {
 
         if (QString(eggStr).endsWith(egg1)) {
             eggStat = 1;
-            setWindowTitle("Winamp - \"It really whips the llama's ass!\"");
+            setWindowTitle("Qtamp");
             QTimer::singleShot(3000, this, [this]() {
-                setWindowTitle("Winamp 0.5 BETA for Linux");
+                setWindowTitle("Qtamp 0.0.1");
                 eggStat = 0;
             });
         } else if (QString(eggStr).endsWith(egg2)) {
             eggStat = 2;
-            setWindowTitle("Winamp - by Justin Frankel & the Nullsoft crew");
+            setWindowTitle("Qtamp");
             QTimer::singleShot(3000, this, [this]() {
-                setWindowTitle("Winamp 0.5 BETA for Linux");
+                setWindowTitle("Qtamp 0.0.1");
                 eggStat = 0;
             });
         }
@@ -2678,7 +2678,7 @@ void WinampWindow::playTrack(const QString &fileName) {
     // Show song change notification (matches Windows balloon tooltips)
     if (showSongNotifications && trayIcon) {
         QString title = metaTitle.isEmpty() ? QFileInfo(fileName).completeBaseName() : metaTitle;
-        trayIcon->showMessage("Winamp", title, QSystemTrayIcon::Information, 3000);
+        trayIcon->showMessage("Qtamp", title, QSystemTrayIcon::Information, 3000);
     }
 
     // Preload next track for gapless playback
@@ -2891,10 +2891,10 @@ void WinampWindow::setupSystemTray() {
 
     trayIcon = new QSystemTrayIcon(this);
     trayIcon->setIcon(windowIcon().isNull() ? QIcon::fromTheme("audio-headphones") : windowIcon());
-    trayIcon->setToolTip("Winamp 0.5 BETA for Linux");
+    trayIcon->setToolTip("Qtamp 0.0.1");
 
     trayMenu = new QMenu(this);
-    trayMenu->addAction("Winamp", this, [this]() {
+    trayMenu->addAction("Qtamp", this, [this]() {
         show();
         raise();
         activateWindow();
@@ -2945,7 +2945,7 @@ void WinampWindow::setupSystemTray() {
 
 void WinampWindow::updateTrayTooltip() {
     if (!trayIcon) return;
-    QString tip = "Winamp";
+    QString tip = "Qtamp";
     if (!metaTitle.isEmpty()) {
         tip = metaTitle;
     } else if (!currentFile.isEmpty()) {

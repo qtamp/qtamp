@@ -3,7 +3,7 @@
 #include "translator.h"
 
 MediaLibraryWindow::MediaLibraryWindow(QWidget *parent) : QWidget(parent) {
-    setWindowTitle(TR("win.library.title", "Winamp Library"));
+    setWindowTitle(TR("win.library.title", "Qtamp Library"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_DeleteOnClose, false);  // Don't delete on close, just hide
     resize(275, 300);
@@ -93,8 +93,8 @@ void MediaLibraryWindow::paintEvent(QPaintEvent*) {
     // Fill center with background color
     p.fillRect(24, 24, w - 48, h - 48, bgColor);
     
-    // Draw titlebar text "Winamp Library" using gen.bmp font
-    QString title = "Winamp Library";
+    // Draw titlebar text "Qtamp Library" using gen.bmp font
+    QString title = "Qtamp Library";
     int textX = 30;
     for (const QChar &ch : title) {
         QPoint charPos = getTitleCharPos(ch);

@@ -17,9 +17,9 @@
 
 int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
-  app.setApplicationName("Winamp");
+  app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
-  app.setOrganizationName("Nullsoft");
+  app.setOrganizationName("Qtamp");
 
   // Load the Winamp icon from the source resource directory
   QString appDir = QCoreApplication::applicationDirPath();

@@ -275,7 +275,7 @@ void FileInfoDialog::onSave()
 
 AboutDialog::AboutDialog(const QString &skinPath, QWidget *parent) : QDialog(parent)
 {
-    setWindowTitle("About Winamp");
+    setWindowTitle("About Qtamp");
     setFixedSize(480, 360);
 
     // Load splash2.bmp and team.bmp
@@ -303,14 +303,14 @@ AboutDialog::AboutDialog(const QString &skinPath, QWidget *parent) : QDialog(par
 
     // Credits text (from original creditsrend.c)
     credits = QStringList()
-        << "Winamp v5.9.0\n    The Credits"
+        << "Qtamp\n    The Credits"
         << "Linux Qt5/Qt6 Port:\n    Kristopher Craig"
-        << "Winamp for Linux\n    Qt5/Qt6 Native Port"
+        << "Qtamp\n    Qt-native music player"
         << "Original Development:\n Quentin Hebette, Thierry Honore,\n Lionel Peeters, Hakan Danisik,\n Eddy Richman, Jef Mauguit"
         << "QA, Engineering & Support:\n    DJ Egg"
         << "Freeform Skin Engine:\n    Linus Brolin"
         << "Bento Skin:\n    Martin Pohlmann, Taber Buhl,\n    Ben Allison, Victor Brocaz"
-        << "Winamp Hall-of-Fame:\n    Justin Frankel,\n    Christophe Thibault,\n    Francis Gastellu,\n    Brennan Underwood"
+        << "Qtamp is inspired by Winamp by Justin Frankel and the Nullsoft crew."
         << "    Peter Pawlowski, Tom Pepper,\n    Ryan Geiss, Will Fisher,\n    Maksim Tyrtyshny, Darren Owen,\n    Ben Allison"
         << "Modern Skin:\n    Sven Kistner"
         << "PCM EQ magic:\n    4Front Technologies / George Yohng"
@@ -503,7 +503,7 @@ void AboutDialog::paintEvent(QPaintEvent *)
     // === Bottom bar: "Winamp v5.9.0" ===
     p.setPen(QColor(100, 100, 100));
     p.setFont(QFont("Tahoma", 8));
-    p.drawText(0, h - 18, w, 15, Qt::AlignCenter, "Winamp v5.9.0 for Linux — Qt5/Qt6 Native Port");
+    p.drawText(0, h - 18, w, 15, Qt::AlignCenter, "Qtamp");
 }
 
 void AboutDialog::keyPressEvent(QKeyEvent *e)
@@ -599,7 +599,7 @@ QString PlayLocationDialog::getUrl() const
 
 PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent)
 {
-    setWindowTitle("Winamp Preferences");
+    setWindowTitle("Qtamp Preferences");
     setMinimumSize(600, 450);
     setStyleSheet(
         "QDialog { background-color: #2b2b3d; color: #00ff00; }"
@@ -1143,8 +1143,8 @@ void PreferencesDialog::populateSkins()
         }
     }
 
-    // Always show "Winamp Default" as the first entry
-    skinListWidget->addItem("Winamp Default");
+    // Always show "Qtamp Default" as the first entry
+    skinListWidget->addItem("Qtamp Default");
 
     QDir skinsDir(QDir::homePath() + "/.winamp/skins");
     if (!skinsDir.exists()) {
@@ -1183,8 +1183,8 @@ void PreferencesDialog::onSkinSelected(QListWidgetItem *item)
 {
     QString skinName = item->text();
 
-    // Handle "Winamp Default" entry
-    if (skinName == "Winamp Default") {
+    // Handle "Qtamp Default" entry
+    if (skinName == "Qtamp Default") {
         if (!defaultSkinPath.isEmpty()) {
             emit skinChanged(defaultSkinPath);
         }

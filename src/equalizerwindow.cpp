@@ -10,7 +10,7 @@
 // Equalizer Window Constructor
 EqualizerWindow::EqualizerWindow(WinampWindow *parent) : QWidget(nullptr), mainWindow(parent) {
     setFixedSize(275, 116);
-    setWindowTitle(TR("win.equalizer.title", "Winamp Equalizer"));
+    setWindowTitle(TR("win.equalizer.title", "Qtamp Equalizer"));
     setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
 
     // Initialize EQ bands to center position (32 out of 63)
@@ -34,7 +34,7 @@ void EqualizerWindow::paintEvent(QPaintEvent *) {
         p.fillRect(rect(), QColor(66, 66, 99));
         p.setPen(QColor(0, 255, 0));
         p.setFont(QFont("Tahoma", 7, QFont::Bold));
-        p.drawText(6, 10, "Winamp Equalizer");
+        p.drawText(6, 10, "Qtamp Equalizer");
         return;
     }
 

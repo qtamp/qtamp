@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="https://github.com/qtWasabi/qtWasabi/raw/main/docs/mascot.png" alt="Qtamp mascot" width="360">
+  <img src="https://github.com/qtWasabi/qtWasabi/raw/main/docs/mascot.png" alt="qtamp mascot" width="360">
 </p>
 
-<h3 align="center">Qtamp</h3>
+<h3 align="center">qtamp</h3>
 
-<p align="center">"Qt" as in the framework. "qt" as in cute. Qtamp is a Qt-native amp, and we hope it's a cute one.</p>
+<p align="center">"Qt" as in the framework. "qt" as in cute. qtamp is a Qt-native amp, and we hope it's a cute one.</p>
 
 A Qt6-native music player and the **reference embedder** for
 [qtWasabi](https://github.com/qtWasabi/qtWasabi) — the open-source
-continuation of Wasabi, Winamp's Modern skin engine. Qtamp exists
+continuation of Wasabi, Winamp's Modern skin engine. qtamp exists
 to prove that qtWasabi works end-to-end: load a `.wal`, render it
 correctly, run its Maki scripts, play music through it, on Linux,
 macOS, and Windows, on x86_64 and aarch64.
 
-Qtamp is **somewhere between** a thin reference shell and a
+qtamp is **somewhere between** a thin reference shell and a
 daily-driver player. Enough player to actually live in — playlist,
 library, gapless playback, ReplayGain, MIDI, basic plugin host —
 but the engineering budget stays on getting qtWasabi right. If you
@@ -23,7 +23,7 @@ want a feature-complete Winamp successor today, use
 classic Modern skins running on Apple Silicon and Asahi Linux,
 that's us.
 
-### What Qtamp gives you
+### What qtamp gives you
 
 - **Modern Winamp skins (`.wal`) on Linux/macOS/Windows.** The
   whole point. Drop in WinampModernPP, Bento, Big Bento, your
@@ -35,38 +35,38 @@ that's us.
   heavy lifting and we don't fight it.
 - **MIDI playback** via FluidSynth + user-supplied SoundFont. The
   way Winamp did it with BASSMIDI, but native on every platform
-  Qtamp targets. First time classic skinning + MIDI work
+  qtamp targets. First time classic skinning + MIDI work
   together on Apple Silicon.
-- **Embeddable engine.** Qtamp itself is one consumer of qtWasabi.
+- **Embeddable engine.** qtamp itself is one consumer of qtWasabi.
   Anyone else can embed `WasabiQt::Skin` in their own Qt-based
-  player — that's qtWasabi's whole pitch, and Qtamp is the
+  player — that's qtWasabi's whole pitch, and qtamp is the
   reference proving it works.
 
-### What Qtamp is not
+### What qtamp is not
 
 - **Not a Winamp clone in the legal sense.** No Winamp source code
-  in the Qtamp repo. The skin engine (qtWasabi) is a separate
-  project with its own licensing posture; Qtamp links against it.
+  in the qtamp repo. The skin engine (qtWasabi) is a separate
+  project with its own licensing posture; qtamp links against it.
 - **Not a replacement for full-fat audio players.** No internet
   radio directories, no podcast manager, no music store
   integrations, no fancy library views. You point it at your
   music folder and it plays your music.
-- **Not Classic-skin-compatible (yet).** Qtamp targets _Modern_
+- **Not Classic-skin-compatible (yet).** qtamp targets _Modern_
   skins (`.wal` / `skin.xml` / Maki). Classic `.wsz` skin support
-  is a future qtWasabi milestone, not a Qtamp one.
+  is a future qtWasabi milestone, not a qtamp one.
 - **Not a Win32 plugin host.** Legacy `in_*.dll` / `out_*.dll` /
-  `gen_*.dll` Winamp plugins do not load. Qtamp's plugin
+  `gen_*.dll` Winamp plugins do not load. qtamp's plugin
   protocol is fresh, Qt-native, cross-platform. See below.
 - **Not [Qmmp](https://qmmp.ylsoftware.com/) and not
   [QAmp](https://qamp.sourceforge.net/).** Both are good projects
-  with similar names; Qtamp is unrelated, written from scratch,
+  with similar names; qtamp is unrelated, written from scratch,
   and exists specifically as the reference embedder for qtWasabi.
 
 ### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Qtamp                                                      │
+│  qtamp                                                      │
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  UI shell (QMainWindow + QtWidgets fallback chrome)  │   │
 │  │  ┌────────────────────────────────────────────────┐  │   │
@@ -106,7 +106,7 @@ input. So MIDI tracks behave exactly like MP3s in the playlist —
 same gapless logic, same volume, same EQ, same scrubbing. Users
 pick a default SoundFont (`.sf2` / `.sf3`) in settings — the
 same model as Winamp's BASSMIDI plugin. A small bundled fallback
-SoundFont ships so Qtamp plays MIDI out of the box.
+SoundFont ships so qtamp plays MIDI out of the box.
 
 **UI is QtWidgets, not QML.** Same reasoning as qtWasabi: skins
 are pixel-exact bitmap compositions, `QPainter` over `QWidget`
@@ -115,7 +115,7 @@ maps to that 1:1, and the chrome around the skinned area
 
 ### Plugin support
 
-Qtamp speaks a Qt-native plugin protocol modelled on Winamp's
+qtamp speaks a Qt-native plugin protocol modelled on Winamp's
 classic plugin types but defined as Qt interfaces (no Win32 SDK,
 no `HWND`, no `WM_*`). Five flavours:
 
@@ -139,7 +139,7 @@ A compatibility shim for legacy Win32 Winamp plugins is
 
 ### MIDI input (controller support)
 
-Separate from MIDI _playback_, Qtamp also accepts MIDI _input_
+Separate from MIDI _playback_, qtamp also accepts MIDI _input_
 from connected controllers — bind your MIDI keyboard's transport
 buttons to play/pause, knobs to volume/EQ, etc. Implemented via
 [RtMidi](https://github.com/thestk/rtmidi), routed through a
@@ -154,11 +154,11 @@ not gating shipping.
 
 ```sh
 # Quickest path on Fedora / RHEL / Debian / Arch / openSUSE / macOS:
-curl -fsSL https://Qtamp.org | sh
+curl -fsSL https://qtamp.org | sh
 
 # Or step-by-step:
-git clone https://github.com/kleberbaum/Qtamp
-cd Qtamp
+git clone https://github.com/kleberbaum/qtamp
+cd qtamp
 ./scripts/fetch-deps.sh        # qtWasabi + Wasabi source archive
 ./build.sh                     # configure + build + install
 ```
@@ -177,7 +177,7 @@ src/
   plugin/             — plugin host + Qt interfaces
   midi-input/         — RtMidi wrapper, ControlSource adapter
   skin-host/          — WasabiQt::Host implementation (~40 methods
-                        bridging the skin engine to Qtamp's audio,
+                        bridging the skin engine to qtamp's audio,
                         playlist, library)
 plugins/
   in_ffmpeg/          — reference input plugin (FFmpeg)
@@ -203,7 +203,7 @@ docs/                 — design notes, mascot, screenshots
 
 ### Status
 
-Bootstrapping. Qtamp's milestones are gated on qtWasabi's
+Bootstrapping. qtamp's milestones are gated on qtWasabi's
 milestones — we can't render skins until qtWasabi can render
 skins. Tracking, in dependency order:
 
@@ -215,14 +215,14 @@ skins. Tracking, in dependency order:
    fallback SoundFont, `.mid` files play in the playlist
    indistinguishably from MP3s.
 4. **WasabiQt::Host implementation** — implement the ~40-method
-   host interface so qtWasabi can ask Qtamp for the current
+   host interface so qtWasabi can ask qtamp for the current
    track, play state, volume, etc.
 5. **First skinned window** — qtWasabi milestone 6 lands
-   (WACUP titlebar pixel-regression passes). Qtamp loads
+   (WACUP titlebar pixel-regression passes). qtamp loads
    WinampModernPP and shows the player frame.
 6. **Plugin host** — five plugin interfaces stable, reference
    plugins ship in-tree, plugins can be loaded from
-   `~/.config/Qtamp/plugins/`.
+   `~/.config/qtamp/plugins/`.
 7. **1.0** — daily-drivable. Gapless playback, ReplayGain, global
    shortcuts, MPRIS on Linux, Now Playing on macOS, SMTC on
    Windows.
@@ -231,22 +231,22 @@ skins. Tracking, in dependency order:
 
 ### License
 
-Qtamp: **MIT**, see [`COPYING`](COPYING).
+qtamp: **MIT**, see [`COPYING`](COPYING).
 
-Qtamp links against qtWasabi (MIT) which loads user-supplied
+qtamp links against qtWasabi (MIT) which loads user-supplied
 Wasabi source under the Winamp Collaborative License v1.0 at
 build time. FluidSynth is LGPL-2.1+ (linked dynamically).
 RtMidi is MIT. Same posture as qtWasabi — no Winamp-licensed
-code in Qtamp's repo or git history.
+code in qtamp's repo or git history.
 
 ### Mascot
 
-Qtamp shares qtWasabi's mascot — a friendly face cheering both
+qtamp shares qtWasabi's mascot — a friendly face cheering both
 projects along. Not a logo, not a trademark.
 
 ### Inspirations
 
-- **Winamp** — the original. Qtamp is not a clone; it is a love
+- **Winamp** — the original. qtamp is not a clone; it is a love
   letter to a UI idea Nullsoft got right in 2002 and that hasn't
   been improved on since.
 - **WACUP** — for showing that the Modern skin format still has
@@ -254,12 +254,12 @@ projects along. Not a logo, not a trademark.
   qtWasabi's pixel tests measure against.
 - **Audacious** — for proving a Qt-based, cross-platform Winamp
   successor is possible. Audacious goes wider on features;
-  Qtamp goes deeper on skin fidelity.
+  qtamp goes deeper on skin fidelity.
 - **Qmmp** — for being there first as a Qt-based Winamp-style
   player, and for showing the niche has staying power.
 - **BASSMIDI** — for showing how good MIDI playback in a media
   player can sound when you give it a real synth and a real
-  SoundFont. Qtamp does the same thing with FluidSynth.
+  SoundFont. qtamp does the same thing with FluidSynth.
 - **cmus, mpd, deadbeef** — for the Linux audio-player tradition
   of doing one thing well.
 
@@ -268,6 +268,6 @@ projects along. Not a logo, not a trademark.
 - [qtWasabi](https://github.com/qtWasabi/qtWasabi) — the skin engine
   this player exists to demonstrate.
 - [winamp-linux](https://github.com/lord3nd3r/winamp-linux) — earlier
-  prototype, superseded by qtWasabi + Qtamp.
+  prototype, superseded by qtWasabi + qtamp.
 - [FluidSynth](https://www.fluidsynth.org/) — software synthesizer
   powering MIDI playback.

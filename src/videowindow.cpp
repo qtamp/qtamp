@@ -3,7 +3,7 @@
 #include "translator.h"
 
 VideoWindow::VideoWindow(QWidget *parent) : QWidget(parent) {
-    setWindowTitle(TR("win.video.title", "Winamp Video"));
+    setWindowTitle(TR("win.video.title", "Qtamp Video"));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_DeleteOnClose, false);  // Don't delete on close, just hide
     resize(320, 240);
