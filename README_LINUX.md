@@ -2,6 +2,9 @@
 
 A native Linux port of Winamp using Qt as the UI foundation. Supports both **Qt5 (≥ 5.12)** and **Qt6**, with automatic detection at build time. The goal is to maintain the classic Winamp look and feel while running natively on Linux.
 
+> [!WARNING]
+> **Winamp 5.x / Modern skins are NOT supported.** The Wasabi/XML/Bento skin engine has not been ported. Loading a 5.x modern skin (.wal) will break the UI. **Use classic skins (.wsz) only.**
+
 ## Project Status
 
 🚧 **Early Development** — Fully playable with classic skins
@@ -38,9 +41,10 @@ A native Linux port of Winamp using Qt as the UI foundation. Supports both **Qt5
 | 10-band EQ DSP | ❌ | ❌ | ✅ |
 | Live spectrum/VU | ❌ | ❌ | ✅ |
 
-### Not Yet Working
-- ❌ **Modern skins (XML/Wasabi/Bento)** — The Wasabi XML skin engine has not been ported.
-  Modern skin selection is disabled in Preferences. Use classic skins (.wsz) instead.
+### ⛔ Not Working — Do NOT Use
+- **Winamp 5.x / Modern skins (.wal, XML/Wasabi/Bento)** — The modern skin engine is completely unported.
+  These skins **will break the UI** if loaded. The skin picker in Preferences is disabled for modern skins.
+  Only classic Winamp 2.x skins (`.wsz` / raw BMP directories) are supported.
 
 ## Building
 
