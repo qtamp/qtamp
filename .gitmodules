@@ -1,0 +1,3 @@
+[submodule "deps/qtWasabi"]
+	path = deps/qtWasabi
+	url = https://github.com/qtWasabi/qtWasabi.git

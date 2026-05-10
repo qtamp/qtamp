@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: MIT
+# Qtamp gitignore.  Tracks the Qt/CMake build outputs Qtamp itself
+# produces, plus a few qtWasabi-submodule-specific paths so a local
+# build of qtWasabi (which fetches the WCL-licensed Llama Group
+# Winamp source release into its own working tree) never gets
+# accidentally committed back into Qtamp's history.
+
+# ── Qtamp build outputs ─────────────────────────────────────────────
+/build/
+/build-*/
+/out/
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# ── qtWasabi submodule local artefacts ──────────────────────────────
+# The submodule itself is tracked at deps/qtWasabi — but its local
+# build outputs and the WCL-licensed Wasabi source archive that
+# qtWasabi's scripts/fetch-wasabi.sh drops into wasabi-src/ must
+# NEVER be committed back through Qtamp.
+/deps/qtWasabi/build/
+/deps/qtWasabi/build-*/
+/deps/qtWasabi/wasabi-src/
+/deps/qtWasabi/wasabi-src.7z
+/deps/qtWasabi/*.winamp.tar.gz
+
+# ── CMake ───────────────────────────────────────────────────────────
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# ── Qt MOC / RCC / UIC ──────────────────────────────────────────────
+moc_*.cpp
+ui_*.h
+qrc_*.cpp
+*.pro.user
+
+# ── RPM / .deb / packaging output ───────────────────────────────────
+/rpmbuild/
+*.rpm
+*.deb
+/packaging/rpm/SOURCES/
+/packaging/rpm/BUILD/
+/packaging/rpm/BUILDROOT/
+/packaging/rpm/RPMS/
+/packaging/rpm/SRPMS/
+
+# ── macOS .app / .dmg ───────────────────────────────────────────────
+*.app/
+/packaging/macos/dmg-staging/
+.DS_Store
+
+# ── Flatpak ─────────────────────────────────────────────────────────
+/packaging/flatpak/.flatpak-builder/
+/packaging/flatpak/build/
+/packaging/flatpak/repo/
+
+# ── User data the player creates while running from build dir ──────
+*.sqlite
+*.sqlite3
+*.db
+
+# ── IDE / editor ────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.orig
+*.bak

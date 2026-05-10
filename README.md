@@ -152,15 +152,51 @@ not gating shipping.
 
 ### Build / install
 
-```sh
-# Quickest path on Fedora / RHEL / Debian / Arch / openSUSE / macOS:
-curl -fsSL https://qtamp.org | sh
+qtamp depends on **qtWasabi** for Modern-skin rendering.  qtWasabi
+lives at `deps/qtWasabi` as a git submodule, and qtWasabi in turn
+needs the WCL-licensed 2024 Llama Group Winamp source release on
+the local disk to compile (the Maki VM and a small portable BFC
+subset are linked in from there at build time, never redistributed).
 
-# Or step-by-step:
-git clone https://github.com/kleberbaum/qtamp
+#### Quickest path
+
+```sh
+# Fedora / RHEL / Debian / Arch / openSUSE / macOS:
+curl -fsSL https://qtamp.org | sh
+```
+
+#### From source
+
+```sh
+# 1) Clone with the qtWasabi submodule populated.
+git clone --recurse-submodules https://github.com/kleberbaum/qtamp
 cd qtamp
-./scripts/fetch-deps.sh        # qtWasabi + Wasabi source archive
-./build.sh                     # configure + build + install
+
+# 1a) (or, if you cloned without --recurse-submodules)
+#     git submodule update --init --recursive
+
+# 2) Fetch the WCL-licensed Llama Group Winamp source archive into
+#    deps/qtWasabi/wasabi-src/.  qtWasabi handles the download
+#    itself; the directory is gitignored on both ends.
+(cd deps/qtWasabi && ./scripts/fetch-wasabi.sh)
+
+# 3) Configure and build, opting qtWasabi in.
+cmake -B build -G Ninja \
+    -DQTAMP_USE_QTWASABI=ON \
+    -DWASABI_SRC_DIR="$(pwd)/deps/qtWasabi/wasabi-src/Src"
+cmake --build build
+
+# 4) Run.  --modern-skin <path> hands the chrome over to qtWasabi;
+#    without it, qtamp falls back to the classic-skin code path.
+./build/qtamp --modern-skin ~/.winamp/skins/WinampModernPP
+```
+
+#### Updating qtWasabi
+
+```sh
+git submodule update --remote deps/qtWasabi
+git add deps/qtWasabi
+git commit -m "chore(deps): bump qtWasabi"
 ```
 
 Per-distro instructions, packaging recipes (RPM + macOS .dmg +
