@@ -22,6 +22,8 @@
 #  include <WasabiQt/Layout.h>
 #  include <WasabiQt/BitmapRegistry.h>
 #  include <WasabiQt/Host.h>
+#  include <QAudioBuffer>
+#  include <QAudioBufferOutput>
 #  include <QAudioOutput>
 #  include <QImage>
 #  include <QKeyEvent>
@@ -29,6 +31,7 @@
 #  include <QMouseEvent>
 #  include <QUrl>
 #  include <QWindow>
+#  include <cmath>
 namespace {
 // Resolver passed to qtWasabi's Layout::hitTest so widgets that
 // take their pixel size from a named bitmap (typical for buttons)
@@ -53,11 +56,19 @@ QSize qtampImageSize(const QString &bitmapId, void *userdata) {
 // expects, so qtWasabi's default DisplayResolver + dispatchAction
 // helpers can do the actual skin-format-convention work.
 class QtampPlayerWindow;
-class QtampHost : public WasabiQt::Host {
+class QtampHost : public QObject, public WasabiQt::Host {
 public:
     QtampHost() {
         m_player.setAudioOutput(&m_audio);
         m_audio.setVolume(qreal(0.7));
+
+        // Audio-buffer tap so <vis> bars can bounce with the audio.
+        // Qt 6.7+: QMediaPlayer routes raw PCM to a connected
+        // QAudioBufferOutput in addition to the audio sink.
+        m_player.setAudioBufferOutput(&m_bufOut);
+        QObject::connect(&m_bufOut,
+                         &QAudioBufferOutput::audioBufferReceived,
+                         this, &QtampHost::onAudioBuffer);
     }
 
     void bindWindow(QtampPlayerWindow *w) { m_window = w; }
@@ -104,13 +115,68 @@ public:
     //    what users expect.
     QUrl pickFile(QWidget *embedder) override;
 
+    // ── Visualisation: smoothed RMS of the most recent audio
+    //    buffer in [0..1].
+    double audioLevel() const override { return m_audioLevel; }
+
     // ── Window control — implemented via the bound window.
     bool close()    override;
     bool minimize() override;
 
 private:
+    void onAudioBuffer(const QAudioBuffer &buf) {
+        if (!buf.isValid() || buf.frameCount() <= 0) return;
+        const QAudioFormat fmt = buf.format();
+        const int frames = buf.frameCount();
+        const int channels = fmt.channelCount();
+        const int total = frames * channels;
+        if (total <= 0 || channels <= 0) return;
+
+        double sumSq = 0.0;
+        switch (fmt.sampleFormat()) {
+        case QAudioFormat::Float: {
+            const float *d = buf.constData<float>();
+            for (int i = 0; i < total; ++i)
+                sumSq += double(d[i]) * d[i];
+            break;
+        }
+        case QAudioFormat::Int16: {
+            const qint16 *d = buf.constData<qint16>();
+            for (int i = 0; i < total; ++i) {
+                const double v = d[i] / 32768.0;
+                sumSq += v * v;
+            }
+            break;
+        }
+        case QAudioFormat::Int32: {
+            const qint32 *d = buf.constData<qint32>();
+            for (int i = 0; i < total; ++i) {
+                const double v = d[i] / 2147483648.0;
+                sumSq += v * v;
+            }
+            break;
+        }
+        case QAudioFormat::UInt8: {
+            const quint8 *d = buf.constData<quint8>();
+            for (int i = 0; i < total; ++i) {
+                const double v = (int(d[i]) - 128) / 128.0;
+                sumSq += v * v;
+            }
+            break;
+        }
+        default: return;
+        }
+        const double rms = std::sqrt(sumSq / total);
+        // Asymmetric smoothing — fast attack, slower decay so the
+        // bars peak quickly with the audio and fall back gradually.
+        const double alpha = (rms > m_audioLevel) ? 0.5 : 0.15;
+        m_audioLevel = m_audioLevel * (1.0 - alpha) + rms * alpha;
+    }
+
     QMediaPlayer  m_player;
     QAudioOutput  m_audio;
+    QAudioBufferOutput m_bufOut;
+    double        m_audioLevel = 0.0;
     QtampPlayerWindow *m_window = nullptr;
 };
 
