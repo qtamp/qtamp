@@ -62,6 +62,28 @@ public:
         setAttribute(Qt::WA_TranslucentBackground);
         m_player.setAudioOutput(&m_audio);
         m_audio.setVolume(qreal(0.7));
+
+        // Wire up display widgets — <text display="time">, <text
+        // display="songname">, etc. — so the chrome shows live track
+        // info instead of empty default strings.
+        setDisplayResolver([this](const QString &key) -> QString {
+            return resolveDisplay(key);
+        });
+
+        // 200ms repaint cadence so the time text ticks visibly while
+        // playback is running.  Cheap; SkinView's paintEvent is a
+        // single TreePainter walk over the same tree.
+        auto *tick = new QTimer(this);
+        tick->setInterval(200);
+        connect(tick, &QTimer::timeout, this,
+                qOverload<>(&QWidget::update));
+        tick->start();
+
+        // And immediate repaints when transport state / source changes.
+        connect(&m_player, &QMediaPlayer::sourceChanged, this,
+                [this](const QUrl &) { update(); });
+        connect(&m_player, &QMediaPlayer::playbackStateChanged, this,
+                [this](QMediaPlayer::PlaybackState) { update(); });
     }
 
 protected:
@@ -98,14 +120,82 @@ protected:
         WasabiQt::SkinView::mouseReleaseEvent(e);
     }
     void keyPressEvent(QKeyEvent *e) override {
-        if (e->key() == Qt::Key_Escape) {
-            close();
+        const bool ctrl = e->modifiers() & Qt::ControlModifier;
+        if (e->key() == Qt::Key_Escape)               { close(); return; }
+        if (ctrl && e->key() == Qt::Key_O)            { openFileDialog(); return; }
+        if (ctrl && e->key() == Qt::Key_L)            { openFileDialog(); return; }
+        if (e->key() == Qt::Key_Space)                {
+            if (m_player.playbackState() == QMediaPlayer::PlayingState)
+                m_player.pause();
+            else
+                m_player.play();
             return;
         }
+        if (e->key() == Qt::Key_MediaPlay)            { m_player.play();  return; }
+        if (e->key() == Qt::Key_MediaPause)           { m_player.pause(); return; }
+        if (e->key() == Qt::Key_MediaStop)            { m_player.stop();  return; }
         WasabiQt::SkinView::keyPressEvent(e);
     }
 
 private:
+    // Map a Wasabi <text display="key"/> attribute onto a live string.
+    // Recognised keys come from the WinampModernPP / Modern-skin
+    // family — everything else falls through to an empty string,
+    // which lets the widget fall back to its `default=` attribute.
+    QString resolveDisplay(const QString &key) const {
+        const QString k = key.toLower();
+        if (k == QStringLiteral("time")) {
+            const qint64 ms = m_player.position();
+            const qint64 secTotal = ms / 1000;
+            const qint64 m = secTotal / 60;
+            const qint64 s = secTotal % 60;
+            return QStringLiteral("%1:%2")
+                .arg(m).arg(s, 2, 10, QChar('0'));
+        }
+        if (k == QStringLiteral("timeleft")) {
+            const qint64 left =
+                qMax<qint64>(0, m_player.duration() - m_player.position());
+            const qint64 secTotal = left / 1000;
+            const qint64 m = secTotal / 60;
+            const qint64 s = secTotal % 60;
+            return QStringLiteral("-%1:%2")
+                .arg(m).arg(s, 2, 10, QChar('0'));
+        }
+        if (k == QStringLiteral("duration")) {
+            const qint64 ms = m_player.duration();
+            const qint64 secTotal = ms / 1000;
+            const qint64 m = secTotal / 60;
+            const qint64 s = secTotal % 60;
+            return QStringLiteral("%1:%2")
+                .arg(m).arg(s, 2, 10, QChar('0'));
+        }
+        if (k == QStringLiteral("songname") ||
+            k == QStringLiteral("songtitle") ||
+            k == QStringLiteral("songinfo")) {
+            const QUrl src = m_player.source();
+            if (src.isLocalFile())
+                return QFileInfo(src.toLocalFile()).completeBaseName();
+            if (!src.isEmpty())
+                return src.toString();
+            return QStringLiteral("(no song loaded)");
+        }
+        if (k == QStringLiteral("filename")) {
+            const QUrl src = m_player.source();
+            return src.isLocalFile()
+                ? QFileInfo(src.toLocalFile()).fileName()
+                : src.toString();
+        }
+        if (k == QStringLiteral("kbps") ||
+            k == QStringLiteral("bitrate")) {
+            return QStringLiteral("0");
+        }
+        if (k == QStringLiteral("khz") ||
+            k == QStringLiteral("samplerate")) {
+            return QStringLiteral("0");
+        }
+        return QString();
+    }
+
     bool dispatchAction(const QString &action) {
         fprintf(stderr, "[qtamp] action: %s\n",
                 action.toLocal8Bit().constData());
@@ -225,6 +315,7 @@ int main(int argc, char *argv[]) {
           {{80, 110},  "PAUSE"},
           {{110, 110}, "STOP"},
           {{140, 110}, "NEXT"},
+          {{268, 92},  "EJECT"},
       };
       int passed = 0, failed = 0;
       for (const auto &probe : probes) {
