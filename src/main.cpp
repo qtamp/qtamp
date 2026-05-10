@@ -18,29 +18,90 @@
 #ifdef WINAMP_HAVE_WASABIQT
 #  include <WasabiQt/SkinXml.h>
 #  include <WasabiQt/SkinView.h>
+#  include <QKeyEvent>
+#  include <QMouseEvent>
+#  include <QWindow>
+#endif
+
+#ifdef WINAMP_HAVE_WASABIQT
+// Player-window wrapper around qtWasabi's SkinView.  Modern skins
+// paint their own chrome (titlebar, buttons, borders), so the host
+// window has to be frameless and the click-on-empty-area drag has
+// to be implemented by the embedder.  ESC closes; drag-and-move
+// works via QWindow::startSystemMove() on Wayland and a manual
+// move() fallback elsewhere.
+class QtampPlayerWindow : public WasabiQt::SkinView {
+public:
+    explicit QtampPlayerWindow(QWidget *parent = nullptr)
+        : WasabiQt::SkinView(parent) {
+        setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
+        setAttribute(Qt::WA_TranslucentBackground);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override {
+        if (e->button() == Qt::LeftButton) {
+            // Wayland / native system-move when available.
+            if (windowHandle() && windowHandle()->startSystemMove())
+                return;
+            m_dragOrigin = e->globalPosition().toPoint() -
+                           frameGeometry().topLeft();
+            m_dragging = true;
+        }
+        WasabiQt::SkinView::mousePressEvent(e);
+    }
+    void mouseMoveEvent(QMouseEvent *e) override {
+        if (m_dragging && (e->buttons() & Qt::LeftButton)) {
+            move(e->globalPosition().toPoint() - m_dragOrigin);
+        }
+        WasabiQt::SkinView::mouseMoveEvent(e);
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override {
+        m_dragging = false;
+        WasabiQt::SkinView::mouseReleaseEvent(e);
+    }
+    void keyPressEvent(QKeyEvent *e) override {
+        if (e->key() == Qt::Key_Escape) {
+            close();
+            return;
+        }
+        WasabiQt::SkinView::keyPressEvent(e);
+    }
+
+private:
+    QPoint m_dragOrigin;
+    bool   m_dragging = false;
+};
 #endif
 
 namespace {
-// Pull --modern-skin <path> out of argv before the rest of the
-// player's arg parsing runs.  The arg gets stripped from argv so the
-// existing classic-skin code never sees it.
-QString takeModernSkinArg(int &argc, char **argv) {
+// Pull --<flag> <path> out of argv before the rest of the player's
+// arg parsing runs.  The flag + value get stripped from argv so the
+// existing classic-skin code never sees them.
+QString takeStringArg(int &argc, char **argv, const char *flag) {
     for (int i = 1; i < argc; ++i) {
         const QString a = QString::fromLocal8Bit(argv[i]);
-        if (a == "--modern-skin" && i + 1 < argc) {
-            const QString skin = QString::fromLocal8Bit(argv[i + 1]);
+        if (a == QLatin1String(flag) && i + 1 < argc) {
+            const QString value = QString::fromLocal8Bit(argv[i + 1]);
             for (int j = i; j + 2 < argc; ++j) argv[j] = argv[j + 2];
             argc -= 2;
             argv[argc] = nullptr;
-            return skin;
+            return value;
         }
     }
     return {};
+}
+QString takeModernSkinArg(int &argc, char **argv) {
+    return takeStringArg(argc, argv, "--modern-skin");
+}
+QString takeScreenshotArg(int &argc, char **argv) {
+    return takeStringArg(argc, argv, "--screenshot");
 }
 }  // namespace
 
 int main(int argc, char *argv[]) {
   QString modernSkinPath = takeModernSkinArg(argc, argv);
+  QString screenshotPath = takeScreenshotArg(argc, argv);
 
   QApplication app(argc, argv);
   app.setApplicationName("Qtamp");
@@ -68,7 +129,7 @@ int main(int argc, char *argv[]) {
       return 3;
     }
 
-    auto *view = new WasabiQt::SkinView();
+    auto *view = new QtampPlayerWindow();
     if (!view->load(doc, "main", "normal", &err)) {
       qWarning() << "qtamp: layout load failed:" << err;
       return 4;
@@ -76,6 +137,24 @@ int main(int argc, char *argv[]) {
     view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
     view->resize(view->layoutNativeSize());
     view->show();
+
+    // Visual-debug pipeline mirroring qtWasabi's render_layout: when
+    // --screenshot is set, wait for the first paintEvent to land,
+    // grab the widget, save PNG, exit.  Use a 0-ms timer + a small
+    // delay so AUTOMOC and the initial repaint complete first.
+    if (!screenshotPath.isEmpty()) {
+      QTimer::singleShot(150, view, [view, screenshotPath]() {
+        QPixmap shot = view->grab();
+        if (shot.save(screenshotPath)) {
+          qInfo() << "qtamp: wrote" << screenshotPath
+                  << "(" << shot.width() << "x" << shot.height() << ")";
+          QCoreApplication::exit(0);
+        } else {
+          qWarning() << "qtamp: failed to save" << screenshotPath;
+          QCoreApplication::exit(5);
+        }
+      });
+    }
     return app.exec();
   }
 #else
