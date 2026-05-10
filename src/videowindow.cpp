@@ -1,4 +1,5 @@
 #include "videowindow.h"
+#include "qt5compat.h"
 #include "translator.h"
 
 VideoWindow::VideoWindow(QWidget *parent) : QWidget(parent) {
@@ -92,14 +93,14 @@ void VideoWindow::mousePressEvent(QMouseEvent *event) {
         if (edge != NoEdge) {
             isResizing = true;
             resizeEdge = edge;
-            resizeStartPos = event->globalPosition().toPoint();
+            resizeStartPos = GLOBAL_POS(event);
             resizeStartGeometry = geometry();
             event->accept();
             return;
         }
         // Otherwise, start dragging
         isDragging = true;
-        dragStartPos = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        dragStartPos = GLOBAL_POS(event) - frameGeometry().topLeft();
     } else if (event->button() == Qt::RightButton) {
         // Could show context menu here
     }
@@ -110,7 +111,7 @@ void VideoWindow::mouseMoveEvent(QMouseEvent *event) {
     
     // Handle resizing
     if (isResizing) {
-        QPoint delta = event->globalPosition().toPoint() - resizeStartPos;
+        QPoint delta = GLOBAL_POS(event) - resizeStartPos;
         QRect newGeom = resizeStartGeometry;
         
         // Adjust geometry based on resize edge
@@ -143,7 +144,7 @@ void VideoWindow::mouseMoveEvent(QMouseEvent *event) {
     
     // Handle dragging
     if (isDragging) {
-        move(event->globalPosition().toPoint() - dragStartPos);
+        move(GLOBAL_POS(event) - dragStartPos);
         return;
     }
     

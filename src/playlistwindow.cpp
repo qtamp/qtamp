@@ -1,4 +1,5 @@
 #include "playlistwindow.h"
+#include "qt5compat.h"
 #include "winampwindow.h"
 #include "skinutils.h"
 #include "winampbitmaps.h"
@@ -15,6 +16,11 @@
 #include <QPushButton>
 #include <QDialog>
 #include <QToolTip>
+#include <QDateTime>
+
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+#include <QMediaContent>
+#endif
 
 PlaylistWindow::PlaylistWindow(WinampWindow *parent) : QWidget(nullptr), mainWindow(parent) {
     setMinimumSize(275, 116);
@@ -607,7 +613,11 @@ void PlaylistWindow::addTrack(const QString &filePath) {
         // (the old blocking QEventLoop could crash when called during drag-drop)
         int trackIndex = tracks.size() - 1;
         QMediaPlayer *probe = new QMediaPlayer(this);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         probe->setSource(QUrl::fromLocalFile(filePath));
+#else
+        probe->setMedia(QMediaContent(QUrl::fromLocalFile(filePath)));
+#endif
         connect(probe, &QMediaPlayer::mediaStatusChanged, this, [this, probe, trackIndex](QMediaPlayer::MediaStatus status){
             if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::InvalidMedia) {
                 if (trackIndex < trackDurations.size()) {
@@ -910,15 +920,15 @@ void PlaylistWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::RightButton) {
         // Bottom buttons still respond to right click (matching drawn button positions)
         if (y >= h - 30 && y < h - 12) {
-            if (x >= 14 && x < 36) { showAddMenu(event->globalPosition().toPoint()); return; }
-            if (x >= 43 && x < 65) { showRemMenu(event->globalPosition().toPoint()); return; }
-            if (x >= 72 && x < 94) { showSelMenu(event->globalPosition().toPoint()); return; }
-            if (x >= 101 && x < 123) { showMiscMenu(event->globalPosition().toPoint()); return; }
-            if (x >= width() - 44 && x < width() - 22) { showListMenu(event->globalPosition().toPoint()); return; }
+            if (x >= 14 && x < 36) { showAddMenu(GLOBAL_POS(event)); return; }
+            if (x >= 43 && x < 65) { showRemMenu(GLOBAL_POS(event)); return; }
+            if (x >= 72 && x < 94) { showSelMenu(GLOBAL_POS(event)); return; }
+            if (x >= 101 && x < 123) { showMiscMenu(GLOBAL_POS(event)); return; }
+            if (x >= width() - 44 && x < width() - 22) { showListMenu(GLOBAL_POS(event)); return; }
         }
         // Right-click on list area shows the full context menu
         if (y >= 20 && y < h - 38) {
-            showContextMenu(event->globalPosition().toPoint());
+            showContextMenu(GLOBAL_POS(event));
             event->accept();
             return;
         }
@@ -928,23 +938,23 @@ void PlaylistWindow::mousePressEvent(QMouseEvent *event) {
     // Left-click bottom buttons (matching drawn positions from draw_pe.cpp)
     if (y >= h - 30 && y < h - 12) {
         if (x >= 14 && x < 36) {
-            showAddMenu(event->globalPosition().toPoint());
+            showAddMenu(GLOBAL_POS(event));
             event->accept();
             return;
         } else if (x >= 43 && x < 65) {
-            showRemMenu(event->globalPosition().toPoint());
+            showRemMenu(GLOBAL_POS(event));
             event->accept();
             return;
         } else if (x >= 72 && x < 94) {
-            showSelMenu(event->globalPosition().toPoint());
+            showSelMenu(GLOBAL_POS(event));
             event->accept();
             return;
         } else if (x >= 101 && x < 123) {
-            showMiscMenu(event->globalPosition().toPoint());
+            showMiscMenu(GLOBAL_POS(event));
             event->accept();
             return;
         } else if (x >= width() - 44 && x < width() - 22) {
-            showListMenu(event->globalPosition().toPoint());
+            showListMenu(GLOBAL_POS(event));
             event->accept();
             return;
         }
@@ -987,14 +997,14 @@ void PlaylistWindow::mousePressEvent(QMouseEvent *event) {
             if (edge != NoEdge) {
                 isResizing = true;
                 resizeEdge = edge;
-                resizeStartPos = event->globalPosition().toPoint();
+                resizeStartPos = GLOBAL_POS(event);
                 resizeStartSize = size();
                 event->accept();
                 return;
             }
         }
         isDragging = true;
-        dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        dragPosition = GLOBAL_POS(event) - frameGeometry().topLeft();
         event->accept();
     }
 }
@@ -1027,7 +1037,7 @@ void PlaylistWindow::dropEvent(QDropEvent *event) {
 void PlaylistWindow::mouseMoveEvent(QMouseEvent *event) {
     // Handle resizing
     if (isResizing) {
-        QPoint delta = event->globalPosition().toPoint() - resizeStartPos;
+        QPoint delta = GLOBAL_POS(event) - resizeStartPos;
         QSize newSize = resizeStartSize;
         if (resizeEdge & RightEdge)
             newSize.setWidth(qMax(275, resizeStartSize.width() + delta.x()));
@@ -1039,7 +1049,7 @@ void PlaylistWindow::mouseMoveEvent(QMouseEvent *event) {
     
     // Handle scrollbar dragging
     if (isDraggingScrollbar) {
-        int y = event->position().y();
+        int y = EVENT_POS(event).y();
         int bodyTop = 20;
         int bodyBottom = height() - 38;
         if (listWidget && listWidget->count() > 0) {
@@ -1071,7 +1081,7 @@ void PlaylistWindow::mouseMoveEvent(QMouseEvent *event) {
     }
     
     if (isDragging) {
-        move(event->globalPosition().toPoint() - dragPosition);
+        move(GLOBAL_POS(event) - dragPosition);
         checkSnap();
     }
 }

@@ -64,7 +64,11 @@ void Translator::loadFromFile(const QString &filePath) {
     }
     
     QTextStream in(&file);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     in.setEncoding(QStringConverter::Utf8);
+#else
+    in.setCodec("UTF-8");
+#endif
     
     while (!in.atEnd()) {
         QString line = in.readLine().trimmed();

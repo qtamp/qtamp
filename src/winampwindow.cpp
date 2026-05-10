@@ -21,6 +21,23 @@
 #include <cmath>
 #include <cstring>
 
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+#include <QMediaContent>
+#endif
+
+// Qt5/Qt6 compatibility helpers
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#define PLAYBACK_STATE(p)  (p)->playbackState()
+#define MOUSE_GLOBAL_POS(e) (e)->globalPosition().toPoint()
+#define MOUSE_POS_X(e) (e)->position().x()
+#define MOUSE_POS_Y(e) (e)->position().y()
+#else
+#define PLAYBACK_STATE(p)  (p)->state()
+#define MOUSE_GLOBAL_POS(e) (e)->globalPos()
+#define MOUSE_POS_X(e) (e)->pos().x()
+#define MOUSE_POS_Y(e) (e)->pos().y()
+#endif
+
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -55,15 +72,19 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
     // 1) QAudioOutput for direct playback (used as fallback / when EQ is off)
     // 2) QAudioBufferOutput → EQ10 DSP → QAudioSink (when EQ is on)
     player = new QMediaPlayer(this);
+    nextPlayer = new QMediaPlayer(this);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     audioOutput = new QAudioOutput(this);
     player->setAudioOutput(audioOutput);
     audioOutput->setVolume(volume / 255.0f);
-
-    // Setup second player for gapless playback
-    nextPlayer = new QMediaPlayer(this);
     nextAudioOutput = new QAudioOutput(this);
     nextPlayer->setAudioOutput(nextAudioOutput);
     nextAudioOutput->setVolume(volume / 255.0f);
+#else
+    // Qt5: volume controlled directly on QMediaPlayer (range 0-100)
+    player->setVolume(qBound(0, static_cast<int>(volume * 100 / 255), 100));
+    nextPlayer->setVolume(qBound(0, static_cast<int>(volume * 100 / 255), 100));
+#endif
     usingNextPlayer = false;
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
@@ -87,7 +108,11 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
     // (equivalent to Windows global hotkeys + WM_COMMAND remote control)
 #ifdef QT_DBUS_LIB
     new Mpris2RootAdaptor(this);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     new Mpris2PlayerAdaptor(player, audioOutput, this);
+#else
+    new Mpris2PlayerAdaptor(player, this);
+#endif
     QDBusConnection dbus = QDBusConnection::sessionBus();
     dbus.registerObject("/org/mpris/MediaPlayer2", this);
     dbus.registerService("org.mpris.MediaPlayer2.winamp");
@@ -109,7 +134,11 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
     connect(player, &QMediaPlayer::positionChanged, this, [this](qint64) { update(); });
 
     // Auto-show video window when video content is detected
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     connect(player, &QMediaPlayer::hasVideoChanged, this, [this](bool hasVideo) {
+#else
+    connect(player, &QMediaPlayer::videoAvailableChanged, this, [this](bool hasVideo) {
+#endif
         if (hasVideo && videoWindow) {
             videoWindow->setHasVideo(true);
             videoWindow->show();
@@ -139,10 +168,16 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
             }
 
             // Gapless playback: if next track is preloaded, swap players
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             if (nextPlayer->source().isValid() && !shuffleOn) {
+#else
+            if (!nextPlayer->media().isNull() && !shuffleOn) {
+#endif
                 // Swap players for seamless transition
                 std::swap(player, nextPlayer);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                 std::swap(audioOutput, nextAudioOutput);
+#endif
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
                 // Update visualization to use the now-active player
@@ -154,7 +189,11 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
                 player->play();
 
                 // Update currentFile
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                 currentFile = player->source().toLocalFile();
+#else
+                currentFile = player->media().canonicalUrl().toLocalFile();
+#endif
 
                 // Update playlist index
                 int curIdx = playlistWindow->currentTrackIndex();
@@ -203,7 +242,12 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
     });
 
     // Extract bitrate and song metadata when available
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     connect(player, &QMediaPlayer::metaDataChanged, this, [this]() {
+#else
+    connect(player, &QMediaPlayer::metaDataAvailableChanged, this, [this](bool) {
+#endif
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         QMediaMetaData md = player->metaData();
         QVariant br = md.value(QMediaMetaData::AudioBitRate);
         if (br.isValid()) {
@@ -217,6 +261,20 @@ WinampWindow::WinampWindow(QWidget *parent) : QWidget(parent), dragPosition(0,0)
             artist = artistVar.toStringList().join(", ");
         else
             artist = artistVar.toString();
+#else
+        // Qt5: player->metaData(QString) returns QVariant
+        QVariant br = player->metaData("AudioBitRate");
+        if (br.isValid()) {
+            mediaBitrate = br.toInt() / 1000;  // bps -> kbps
+        }
+        QString title = player->metaData("Title").toString();
+        QString artist;
+        QVariant artistVar = player->metaData("ContributingArtist");
+        if (artistVar.canConvert<QStringList>())
+            artist = artistVar.toStringList().join(", ");
+        else
+            artist = artistVar.toString();
+#endif
 
         QString newMetaTitle;
         if (!title.isEmpty()) {
@@ -324,7 +382,11 @@ WinampWindow::~WinampWindow() {
 void WinampWindow::playFile(const QString &file) {
     if (!file.isEmpty() && QFile::exists(file)) {
         currentFile = file;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         player->setSource(QUrl::fromLocalFile(file));
+#else
+        player->setMedia(QMediaContent(QUrl::fromLocalFile(file)));
+#endif
         player->play();
     }
 }
@@ -332,7 +394,11 @@ void WinampWindow::playFile(const QString &file) {
 void WinampWindow::playUrl(const QString &url) {
     if (!url.isEmpty()) {
         currentFile = url;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         player->setSource(QUrl(url));
+#else
+        player->setMedia(QMediaContent(QUrl(url)));
+#endif
         player->play();
         updateTrayTooltip();
 
@@ -724,9 +790,9 @@ void WinampWindow::paintModern(QPainter &p) {
 
     // ---- Playback status (x=11, y=15 within display) ----
     QString statusBmp;
-    if (player->playbackState() == QMediaPlayer::PlayingState)
+    if (PLAYBACK_STATE(player) == QMediaPlayer::PlayingState)
         statusBmp = "player.status.play";
-    else if (player->playbackState() == QMediaPlayer::PausedState)
+    else if (PLAYBACK_STATE(player) == QMediaPlayer::PausedState)
         statusBmp = "player.status.pause";
     else
         statusBmp = "player.status.stop";
@@ -851,9 +917,9 @@ void WinampWindow::paintModern(QPainter &p) {
 
     // Playback status overlay on buttons
     QString btnStatusBmp;
-    if (player->playbackState() == QMediaPlayer::PlayingState)
+    if (PLAYBACK_STATE(player) == QMediaPlayer::PlayingState)
         btnStatusBmp = "player.button.status.play";
-    else if (player->playbackState() == QMediaPlayer::PausedState)
+    else if (PLAYBACK_STATE(player) == QMediaPlayer::PausedState)
         btnStatusBmp = "player.button.status.pause";
     else
         btnStatusBmp = "player.button.status.stop";
@@ -892,7 +958,11 @@ void WinampWindow::paintModern(QPainter &p) {
     QPixmap muteBg = modernSkin.getBitmap("player.button.mute.bg");
     if (!muteBg.isNull()) p.drawPixmap(160, py + 99, muteBg);
     // (Mute toggle drawn with drawModernBtn)
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     bool isMuted = (audioOutput->volume() < 0.01f && volume > 0);
+#else
+    bool isMuted = (player->isMuted() && volume > 0);
+#endif
     QString muteId = isMuted ? "player.button.mute.on" : "player.button.mute.off";
     if (modernPressed == MB_MUTE) muteId = isMuted ? "player.button.mute.on.pressed" : "player.button.mute.off.pressed";
     QPixmap mutePx = modernSkin.getBitmap(muteId);
@@ -1222,8 +1292,8 @@ void WinampWindow::paintEvent(QPaintEvent *) {
     // Play/pause status indicator at (26,28), each 9x9
     if (!bmp.playpaus.isNull()) {
         int srcX = 27; // stopped/not playing
-        if (player->playbackState() == QMediaPlayer::PlayingState) srcX = 0;
-        else if (player->playbackState() == QMediaPlayer::PausedState) srcX = 9;
+        if (PLAYBACK_STATE(player) == QMediaPlayer::PlayingState) srcX = 0;
+        else if (PLAYBACK_STATE(player) == QMediaPlayer::PausedState) srcX = 9;
         p.drawPixmap(26, 28, bmp.playpaus, srcX, 0, 9, 9);
     }
 
@@ -1297,7 +1367,7 @@ void WinampWindow::paintEvent(QPaintEvent *) {
 
     // kbps display at (111, 43) — 3 chars using text.bmp 5x6 font
     // khz display at (156, 43) — 2 chars using text.bmp 5x6 font
-    if (!bmp.text.isNull() && player->playbackState() != QMediaPlayer::StoppedState) {
+    if (!bmp.text.isNull() && PLAYBACK_STATE(player) != QMediaPlayer::StoppedState) {
         auto drawSmallChar = [&](int dx, int dy, QChar ch) {
             QPoint cp = ::getTextCharPos(ch);
             if (cp.x() >= 0)
@@ -1322,7 +1392,7 @@ void WinampWindow::paintEvent(QPaintEvent *) {
         // stereo on: (0,0), stereo off: (0,12), mono on: (29,0), mono off: (29,12)
         bool isStereo = (mediaChannels >= 2);
         bool isMono = (mediaChannels == 1);
-        bool playing = (player->playbackState() != QMediaPlayer::StoppedState);
+        bool playing = (PLAYBACK_STATE(player) != QMediaPlayer::StoppedState);
         p.drawPixmap(212, 41, bmp.monoster, 0, (playing && isStereo) ? 0 : 12, 29, 12);
         p.drawPixmap(239, 41, bmp.monoster, 29, (playing && isMono) ? 0 : 12, 27, 12);
     }
@@ -1561,7 +1631,7 @@ void WinampWindow::keyPressEvent(QKeyEvent *event) {
 
     switch (event->key()) {
         case Qt::Key_Space:
-            if (player->playbackState() == QMediaPlayer::PlayingState)
+            if (PLAYBACK_STATE(player) == QMediaPlayer::PlayingState)
                 player->pause();
             else if (!currentFile.isEmpty())
                 player->play();
@@ -1981,7 +2051,7 @@ void WinampWindow::mousePressEvent(QMouseEvent *event) {
         int y = event->pos().y();
 
         if (event->button() == Qt::RightButton) {
-            showContextMenu(event->globalPosition().toPoint());
+            showContextMenu(MOUSE_GLOBAL_POS(event));
             return;
         }
 
@@ -2016,7 +2086,7 @@ void WinampWindow::mousePressEvent(QMouseEvent *event) {
 
         // Drag window (titlebar or empty area)
         isDragging = true;
-        dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        dragPosition = MOUSE_GLOBAL_POS(event) - frameGeometry().topLeft();
         return;
     }
 
@@ -2041,14 +2111,14 @@ void WinampWindow::mousePressEvent(QMouseEvent *event) {
             QAction *repOneAct = menu.addAction("Repeat track");
             repOneAct->setCheckable(true);
             repOneAct->setChecked(repeatOn && repeatTrack);
-            QAction *sel = menu.exec(event->globalPosition().toPoint());
+            QAction *sel = menu.exec(MOUSE_GLOBAL_POS(event));
             if (sel == repOffAct) { repeatOn = false; repeatTrack = false; }
             else if (sel == repAllAct) { repeatOn = true; repeatTrack = false; }
             else if (sel == repOneAct) { repeatOn = true; repeatTrack = true; }
             update();
             return;
         }
-        showContextMenu(event->globalPosition().toPoint());
+        showContextMenu(MOUSE_GLOBAL_POS(event));
         return;
     }
     int x = event->pos().x();
@@ -2125,7 +2195,7 @@ void WinampWindow::mousePressEvent(QMouseEvent *event) {
         if (x >= 264 && x < 273) { close(); return; }           // Close
         if (x >= 244 && x < 253) { showMinimized(); return; }   // Minimize
         isDragging = true;
-        dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        dragPosition = MOUSE_GLOBAL_POS(event) - frameGeometry().topLeft();
         return;
     }
 
@@ -2205,8 +2275,8 @@ void WinampWindow::mousePressEvent(QMouseEvent *event) {
 // mouseMoveEvent
 // ============================================================================
 void WinampWindow::mouseMoveEvent(QMouseEvent *event) {
-    int x = event->position().x();
-    int y = event->position().y();
+    int x = MOUSE_POS_X(event);
+    int y = MOUSE_POS_Y(event);
 
     // ---- Modern skin mouse move ----
     if (isModernSkin) {
@@ -2229,7 +2299,7 @@ void WinampWindow::mouseMoveEvent(QMouseEvent *event) {
         }
         // Window drag
         if (isDragging) {
-            move(event->globalPosition().toPoint() - dragPosition);
+            move(MOUSE_GLOBAL_POS(event) - dragPosition);
             playlistWindow->followMain();
             eqWindow->followMain();
             return;
@@ -2277,7 +2347,7 @@ void WinampWindow::mouseMoveEvent(QMouseEvent *event) {
     }
 
     if (!tooltip.isEmpty()) {
-        QToolTip::showText(event->globalPosition().toPoint(), tooltip, this);
+        QToolTip::showText(MOUSE_GLOBAL_POS(event), tooltip, this);
     } else {
         QToolTip::hideText();
     }
@@ -2307,7 +2377,7 @@ void WinampWindow::mouseMoveEvent(QMouseEvent *event) {
     }
 
     if (isDragging) {
-        move(event->globalPosition().toPoint() - dragPosition);
+        move(MOUSE_GLOBAL_POS(event) - dragPosition);
         playlistWindow->followMain();
         eqWindow->followMain();
     }
@@ -2372,6 +2442,7 @@ void WinampWindow::mouseReleaseEvent(QMouseEvent *event) {
                     case MB_MUTE: {
                         // Toggle mute
                         static int savedVolume = 200;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
                         if (audioOutput->volume() > 0.01f) {
                             savedVolume = volume;
                             audioOutput->setVolume(0.0);
@@ -2379,6 +2450,16 @@ void WinampWindow::mouseReleaseEvent(QMouseEvent *event) {
                             volume = savedVolume;
                             applyVolume();
                         }
+#else
+                        if (!player->isMuted()) {
+                            savedVolume = volume;
+                            player->setMuted(true);
+                        } else {
+                            player->setMuted(false);
+                            volume = savedVolume;
+                            applyVolume();
+                        }
+#endif
                         break;
                     }
                     case MB_REPEAT:
@@ -2469,7 +2550,11 @@ void WinampWindow::openFile() {
         "Audio Files (*.mp3 *.wav *.flac *.ogg *.m4a *.aac *.wma);;All Files (*)");
     if (!fileName.isEmpty()) {
         currentFile = fileName;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         player->setSource(QUrl::fromLocalFile(fileName));
+#else
+        player->setMedia(QMediaContent(QUrl::fromLocalFile(fileName)));
+#endif
         player->play();
         playlistWindow->addTrack(fileName);
         RecentFilesManager::instance().addFile(fileName);
@@ -2532,14 +2617,22 @@ void WinampWindow::preloadNextTrack() {
     if (nextIdx < count) {
         QString nextFile = playlistWindow->trackAt(nextIdx);
         if (!nextFile.isEmpty() && QFile::exists(nextFile)) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             nextPlayer->setSource(QUrl::fromLocalFile(nextFile));
+#else
+            nextPlayer->setMedia(QMediaContent(QUrl::fromLocalFile(nextFile)));
+#endif
             // Don't play yet, just preload
         }
     } else if (repeatOn && count > 0) {
         // If repeat all is on, preload first track
         QString nextFile = playlistWindow->trackAt(0);
         if (!nextFile.isEmpty() && QFile::exists(nextFile)) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             nextPlayer->setSource(QUrl::fromLocalFile(nextFile));
+#else
+            nextPlayer->setMedia(QMediaContent(QUrl::fromLocalFile(nextFile)));
+#endif
         }
     }
 }
@@ -2561,7 +2654,11 @@ void WinampWindow::playTrack(const QString &fileName) {
             eqWindow->autoLoadPreset(fileName);
         }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         player->setSource(QUrl::fromLocalFile(fileName));
+#else
+        player->setMedia(QMediaContent(QUrl::fromLocalFile(fileName)));
+#endif
         player->play();
         RecentFilesManager::instance().addFile(fileName);
         updateTrayTooltip();
@@ -2580,15 +2677,21 @@ void WinampWindow::playTrack(const QString &fileName) {
 // Apply volume to audio outputs — respects EQ DSP path
 // When EQ DSP is active, volume is applied in the DSP chain, not via QAudioOutput
 void WinampWindow::applyVolume() {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     if (!eqDspActive) {
         audioOutput->setVolume(volume / 255.0f);
     }
-#else
+  #else
     audioOutput->setVolume(volume / 255.0f);
-#endif
-    // nextAudioOutput always gets volume (it plays before DSP takes over)
+  #endif
     nextAudioOutput->setVolume(volume / 255.0f);
+#else
+    // Qt5: volume is 0-100 int on QMediaPlayer directly
+    int vol5 = qBound(0, static_cast<int>(volume * 100 / 255), 100);
+    player->setVolume(vol5);
+    nextPlayer->setVolume(vol5);
+#endif
 }
 
 void WinampWindow::updateDisplay() {
@@ -2760,9 +2863,9 @@ void WinampWindow::setupSystemTray() {
         if (playlistWindow) playlistWindow->prevTrack();
     });
     QAction *playPauseAction = trayMenu->addAction("Play", this, [this]() {
-        if (player->playbackState() == QMediaPlayer::PlayingState) {
+        if (PLAYBACK_STATE(player) == QMediaPlayer::PlayingState) {
             player->pause();
-        } else if (player->playbackState() == QMediaPlayer::PausedState) {
+        } else if (PLAYBACK_STATE(player) == QMediaPlayer::PausedState) {
             player->play();
         } else if (playlistWindow && playlistWindow->trackCount() > 0) {
             playlistWindow->playCurrentTrack();

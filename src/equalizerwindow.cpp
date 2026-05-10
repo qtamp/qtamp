@@ -1,4 +1,5 @@
 #include "equalizerwindow.h"
+#include "qt5compat.h"
 #include "winampwindow.h"
 #include "winampbitmaps.h"
 #include "modernskinengine.h"
@@ -367,7 +368,7 @@ void EqualizerWindow::mousePressEvent(QMouseEvent *event) {
         if (y < tbH) {
             if (x >= width() - 18) { hide(); return; }
             isDragging = true;
-            dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
+            dragPosition = GLOBAL_POS(event) - frameGeometry().topLeft();
             return;
         }
         // Content offset: center 318px EQ in window
@@ -409,7 +410,7 @@ void EqualizerWindow::mousePressEvent(QMouseEvent *event) {
     if (y < 14) {
         if (x >= 264) { hide(); return; }
         isDragging = true;
-        dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        dragPosition = GLOBAL_POS(event) - frameGeometry().topLeft();
         return;
     }
 
@@ -481,7 +482,7 @@ void EqualizerWindow::mouseMoveEvent(QMouseEvent *event) {
         return;
     }
     if (isDragging) {
-        QPoint newPos = event->globalPosition().toPoint() - dragPosition;
+        QPoint newPos = GLOBAL_POS(event) - dragPosition;
         move(newPos);
         checkSnap();
     }

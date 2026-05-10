@@ -13,6 +13,7 @@
 #include "translator.h"
 #include "winampbitmaps.h"
 #include "winampwindow.h"
+#include "qt5compat.h"
 
 int main(int argc, char *argv[]) {
   QApplication app(argc, argv);
@@ -165,7 +166,7 @@ int main(int argc, char *argv[]) {
       // Will auto-play after adding files
     } else if (arg == "-pause" || arg == "--pause") {
       QTimer::singleShot(100, &w, [&w]() {
-        if (w.getPlayer()->playbackState() == QMediaPlayer::PlayingState)
+        if (PLAYBACK_STATE(w.getPlayer()) == QMediaPlayer::PlayingState)
           w.getPlayer()->pause();
       });
     } else if (arg == "-stop" || arg == "--stop") {

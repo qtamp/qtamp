@@ -1,4 +1,5 @@
 #include "medialibrarywindow.h"
+#include "qt5compat.h"
 #include "translator.h"
 
 MediaLibraryWindow::MediaLibraryWindow(QWidget *parent) : QWidget(parent) {
@@ -115,7 +116,7 @@ void MediaLibraryWindow::mousePressEvent(QMouseEvent *event) {
         if (edge != NoEdge) {
             isResizing = true;
             resizeEdge = edge;
-            resizeStartPos = event->globalPosition().toPoint();
+            resizeStartPos = GLOBAL_POS(event);
             resizeStartGeometry = geometry();
             return;
         }
@@ -130,7 +131,7 @@ void MediaLibraryWindow::mousePressEvent(QMouseEvent *event) {
 
 void MediaLibraryWindow::mouseMoveEvent(QMouseEvent *event) {
     if (isResizing) {
-        QPoint delta = event->globalPosition().toPoint() - resizeStartPos;
+        QPoint delta = GLOBAL_POS(event) - resizeStartPos;
         QRect newGeom = resizeStartGeometry;
         
         if (resizeEdge & LeftEdge) {
@@ -161,7 +162,7 @@ void MediaLibraryWindow::mouseMoveEvent(QMouseEvent *event) {
     }
     
     if (isDragging) {
-        move(event->globalPosition().toPoint() - dragStartPos);
+        move(GLOBAL_POS(event) - dragStartPos);
         return;
     }
     

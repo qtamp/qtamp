@@ -8,8 +8,10 @@
 #include <QDBusMessage>
 #include <QDBusObjectPath>
 #include <QMediaPlayer>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QAudioOutput>
 #include <QMediaMetaData>
+#endif
 #include <QApplication>
 #include <QVariant>
 #include <QWidget>
@@ -60,7 +62,11 @@ class Mpris2PlayerAdaptor : public QDBusAbstractAdaptor {
     Q_PROPERTY(bool CanControl READ canControl)
 
 public:
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     Mpris2PlayerAdaptor(QMediaPlayer *player, QAudioOutput *audioOut, QObject *parent);
+#else
+    Mpris2PlayerAdaptor(QMediaPlayer *player, QObject *parent);
+#endif
 
     QString playbackStatus() const;
     double rate() const { return 1.0; }
@@ -94,7 +100,9 @@ private:
     void emitPropertyChanged(const QString &property, const QVariant &value);
 
     QMediaPlayer *m_player;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     QAudioOutput *m_audioOutput;
+#endif
 };
 
 #endif // QT_DBUS_LIB

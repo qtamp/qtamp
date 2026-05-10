@@ -1,242 +1,205 @@
-# Winamp for Linux - Qt6 Port
+# Winamp for Linux — Qt5/Qt6 Native Port
 
-This is a native Linux port of Winamp using Qt6 as the UI foundation. The goal is to maintain the classic Winamp look and feel while running natively on Linux.
+A native Linux port of Winamp using Qt as the UI foundation. Supports both **Qt5 (≥ 5.12)** and **Qt6**, with automatic detection at build time. The goal is to maintain the classic Winamp look and feel while running natively on Linux.
 
 ## Project Status
 
-🚧 **Early Development** - Basic framework in place
+🚧 **Early Development** — Fully playable with classic skins
 
 ### Completed
-- ✅ CMake build system for Linux
-- ✅ Qt6 integration and project structure
-- ✅ Win32-to-Qt abstraction layer (QtWindowAdapter, QtCanvasAdapter)
-- ✅ Basic main window with classic Winamp appearance
-- ✅ Qt6 Multimedia integration for audio playback
-- ✅ Drag-and-drop file support
-- ✅ Basic playback controls
+- ✅ CMake build system with Qt5/Qt6 dual support
+- ✅ Qt Multimedia integration for audio playback
+- ✅ Classic skin loading (.wsz/.zip archives and raw BMP directories)
+- ✅ 10-band EQ with DSP processing (Qt 6.8+)
+- ✅ Real-time spectrum analyzer, oscilloscope, and VU meter (Qt 6.8+)
+- ✅ Playlist editor with drag-and-drop reordering
+- ✅ Gapless playback via player preloading
+- ✅ MPRIS2 D-Bus integration (media keys, KDE/GNOME control)
+- ✅ System tray with playback controls
+- ✅ Milkdrop-compatible visualization via libprojectM
+- ✅ Video playback window
+- ✅ Media Library browser
+- ✅ Drag-and-drop file/folder support
+- ✅ Bookmark manager and recent files
+- ✅ Multi-language support (translation system)
+- ✅ Command-line file/directory playback
 
-### In Progress
-- 🔨 Wasabi framework porting to Qt
-- 🔨 Plugin system adaptation
-- 🔨 Classic skin loading system (.wsz)
+### Qt5 vs Qt6 Feature Matrix
+
+| Feature | Qt5 (≥ 5.12) | Qt6 | Qt 6.8+ |
+|---------|:---:|:---:|:-------:|
+| Audio playback | ✅ | ✅ | ✅ |
+| Classic skins | ✅ | ✅ | ✅ |
+| Playlist / gapless | ✅ | ✅ | ✅ |
+| MPRIS2 media keys | ✅ | ✅ | ✅ |
+| System tray | ✅ | ✅ | ✅ |
+| Milkdrop (projectM) | ✅ | ✅ | ✅ |
+| Video window | ✅ | ✅ | ✅ |
+| 10-band EQ DSP | ❌ | ❌ | ✅ |
+| Live spectrum/VU | ❌ | ❌ | ✅ |
 
 ### Not Yet Working
-- ❌ **Modern skins (XML/Wasabi/Bento)** — The Wasabi XML skin engine has not been ported to Qt6.
-  Modern skin selection is disabled in Preferences. Use a Classic skin (.wsz) instead.
-
-### TODO
-- ⏳ Full GDI-to-QPainter rendering pipeline
-- ⏳ Equalizer window
-- ⏳ Playlist editor window
-- ⏳ Visualization plugins
-- ⏳ Media Library
-- ⏳ Modern skin (XML/Wasabi) support
-- ⏳ Input/Output plugin framework
-- ⏳ All DSP effects
+- ❌ **Modern skins (XML/Wasabi/Bento)** — The Wasabi XML skin engine has not been ported.
+  Modern skin selection is disabled in Preferences. Use classic skins (.wsz) instead.
 
 ## Building
 
 ### Prerequisites
 
-#### Ubuntu/Debian:
+#### Ubuntu/Debian (Qt6 — recommended):
 ```bash
-sudo apt-get update
 sudo apt-get install -y \
-    build-essential \
-    cmake \
-    ninja-build \
-    qt6-base-dev \
-    qt6-multimedia-dev \
-    libqt6multimedia6 \
-    qt6-tools-dev \
-    libgl1-mesa-dev \
-    libx11-dev \
-    libxext-dev \
-    zlib1g-dev \
-    libpng-dev \
-    libjpeg-dev
+    build-essential cmake ninja-build \
+    qt6-base-dev qt6-multimedia-dev libqt6multimedia6 \
+    qt6-tools-dev libgl1-mesa-dev
 ```
 
-#### Fedora/RHEL:
+#### Ubuntu/Debian (Qt5):
+```bash
+sudo apt-get install -y \
+    build-essential cmake ninja-build \
+    qtbase5-dev qtmultimedia5-dev libqt5multimedia5-plugins \
+    libqt5opengl5-dev libgl1-mesa-dev \
+    gstreamer1.0-plugins-good gstreamer1.0-plugins-base
+```
+
+#### Fedora/RHEL (Qt6):
 ```bash
 sudo dnf install -y \
     gcc gcc-c++ cmake ninja-build \
-    qt6-qtbase-devel \
-    qt6-qtmultimedia-devel \
-    qt6-qttools-devel \
-    mesa-libGL-devel \
-    libX11-devel \
-    libXext-devel \
-    zlib-devel \
-    libpng-devel \
-    libjpeg-turbo-devel
+    qt6-qtbase-devel qt6-qtmultimedia-devel \
+    mesa-libGL-devel
 ```
 
-#### Arch Linux:
+#### Fedora/RHEL (Qt5):
 ```bash
-sudo pacman -S \
-    base-devel cmake ninja \
-    qt6-base qt6-multimedia qt6-tools \
-    mesa libx11 libxext \
-    zlib libpng libjpeg-turbo
+sudo dnf install -y \
+    gcc gcc-c++ cmake ninja-build \
+    qt5-qtbase-devel qt5-qtmultimedia-devel \
+    mesa-libGL-devel \
+    gstreamer1-plugins-good gstreamer1-plugins-base-tools
+```
+
+#### Arch Linux (Qt6):
+```bash
+sudo pacman -S base-devel cmake ninja qt6-base qt6-multimedia mesa
+```
+
+#### Arch Linux (Qt5):
+```bash
+sudo pacman -S base-devel cmake ninja qt5-base qt5-multimedia mesa gst-plugins-good
+```
+
+#### Optional dependencies (all distros):
+```bash
+# MPRIS2 media key support (usually installed by default)
+# Qt6: qt6-dbus / Qt5: libqt5dbus5
+
+# Milkdrop visualization
+# libprojectm-dev (Debian/Ubuntu) / projectM-devel (Fedora) / projectm (Arch)
 ```
 
 ### Build Instructions
 
 ```bash
-# Create build directory
-mkdir build && cd build
+# Configure — CMake auto-detects Qt6, falls back to Qt5
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-# Configure with CMake
-cmake -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/usr \
-    ..
+# Force Qt5 (if both are installed)
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_DISABLE_FIND_PACKAGE_Qt6=ON
 
 # Build
-ninja
+cmake --build build -j$(nproc)
 
 # Install (optional)
-sudo ninja install
+sudo cmake --install build
 ```
 
 ### Running
 
 ```bash
 # From build directory
-./Src/Winamp/winamp
+./build/winamp
 
 # With files
-./Src/Winamp/winamp ~/Music/*.mp3
+./build/winamp ~/Music/*.mp3
 
-# Command line options
-./Src/Winamp/winamp --help
+# With a directory
+./build/winamp ~/Music/
+
+# Enqueue instead of replacing playlist
+./build/winamp --enqueue ~/Music/album/
 ```
 
 ## Architecture
 
-### Layer Structure
+### Qt5/Qt6 Compatibility Layer
 
-```
-┌─────────────────────────────────────┐
-│   Winamp Application (main.cpp)    │
-│   - Classic UI                      │
-│   - Playlist management             │
-│   - Plugin management               │
-└────────────┬────────────────────────┘
-             │
-┌────────────▼────────────────────────┐
-│   Qt6 Abstraction Layer             │
-│   - QtWindowAdapter (HWND→QWidget)  │
-│   - QtCanvasAdapter (HDC→QPainter)  │
-│   - Event mapping (MSG→QEvent)      │
-└────────────┬────────────────────────┘
-             │
-┌────────────▼────────────────────────┐
-│   Wasabi Framework                  │
-│   - Window management               │
-│   - Skin engine                     │
-│   - Component services              │
-└────────────┬────────────────────────┘
-             │
-┌────────────▼────────────────────────┐
-│   Qt6 Framework                     │
-│   - QWidget, QPainter               │
-│   - QMediaPlayer, QAudioOutput      │
-│   - QOpenGL for visualization       │
-└─────────────────────────────────────┘
-```
+The codebase uses a preprocessor-guard strategy (`#if QT_VERSION >= QT_VERSION_CHECK(...)`) to support both Qt versions from a single source tree. A central compatibility header `src/qt5compat.h` provides macros for the most common API differences:
 
-### Win32 to Qt6 Mapping
+| Qt6 API | Qt5 API | Macro |
+|---------|---------|-------|
+| `event->globalPosition().toPoint()` | `event->globalPos()` | `GLOBAL_POS(event)` |
+| `event->position().toPoint()` | `event->pos()` | `EVENT_POS(event)` |
+| `player->playbackState()` | `player->state()` | `PLAYBACK_STATE(player)` |
+| `player->setSource(QUrl)` | `player->setMedia(QMediaContent(QUrl))` | Inline `#if` guards |
+| `QMediaMetaData::value()` | `player->metaData(QString)` | Inline `#if` guards |
+| `QAudioOutput` (routing object) | `QMediaPlayer::setVolume()` | Inline `#if` guards |
 
-| Win32 Concept | Qt6 Equivalent | Adapter |
-|---------------|----------------|---------|
-| HWND | QWidget* | QtWindowAdapter |
-| HDC | QPainter* | QtCanvasAdapter |
-| WndProc | QWidget::event() | Event mapping |
-| WM_* messages | QEvent types | QtWindowAdapter |
-| BitBlt/StretchBlt | QPainter::drawPixmap() | QtCanvasAdapter |
-| CreateWindowEx | new QWidget | QtWindowAdapter |
-| DirectSound | QAudioOutput | QMediaPlayer |
-| DirectX/GDI | QPainter/QOpenGL | QtCanvasAdapter |
+### Key Differences by Version
+
+- **Qt5**: Volume via `QMediaPlayer::setVolume(int 0-100)`, metadata via string keys, GStreamer backend
+- **Qt6**: Volume via `QAudioOutput::setVolume(float 0.0-1.0)`, metadata via `QMediaMetaData` enum keys, FFmpeg backend
+- **Qt 6.8+**: `QAudioBufferOutput` enables real-time audio buffer tap for EQ DSP, spectrum analyzer, and VU meters
 
 ## Features
-
-### Currently Working
-- ✅ Basic audio playback (MP3, WAV, OGG, FLAC, M4A)
-- ✅ Classic Winamp interface (275x116px)
-- ✅ Transport controls (Play, Pause, Stop, Previous, Next)
-- ✅ Drag and drop files
-- ✅ Time display
-- ✅ Track title display
-- ✅ Keyboard shortcuts
 
 ### Keyboard Shortcuts
 - **Space**: Play/Pause
 - **S**: Stop
 - **Z**: Previous track
 - **B**: Next track
+- **V**: Stop after current
+- **C**: Pause
+- **L**: Open file
+- **Ctrl+L**: Open URL/location
+- **J**: Jump to file
+- **Alt+W**: Toggle main window
+- **Alt+E**: Toggle equalizer
+- **Alt+A**: Toggle playlist
+- **Ctrl+P**: Preferences
+- **Alt+F4**: Exit
 
-## Development
-
-### Project Structure
-
-```
-Src/
-├── Wasabi/              # UI framework
-│   ├── api/            # Wasabi APIs
-│   ├── bfc/            # Base foundation classes
-│   ├── qt6/            # Qt6 adapter layer ← NEW
-│   │   ├── QtWindowAdapter.cpp
-│   │   └── QtCanvasAdapter.cpp
-│   └── CMakeLists.txt
-├── Winamp/             # Main application
-│   ├── linux/          # Linux-specific code ← NEW
-│   │   ├── main_linux.cpp
-│   │   ├── main_window_qt.cpp
-│   │   └── main_window_qt.h
-│   └── CMakeLists.txt
-├── nu/                 # Nullsoft utilities
-├── tataki/             # Codec abstraction
-└── [plugins]/          # Various plugins (to be ported)
-```
-
-### Next Steps for Contributors
-
-1. **Skin Loading**: Implement full .wsz/.zip skin loading
-2. **Visualization**: Port visualization plugins to OpenGL
-3. **Plugins**: Adapt input/output plugin system for Linux
-4. **Playlist Editor**: Create Qt-based playlist window
-5. **Equalizer**: Port 10-band equalizer to Qt
-6. **Media Library**: Port modern ML interface
+### MPRIS2 Integration
+When built with Qt DBus support, Winamp registers on the session bus as `org.mpris.MediaPlayer2.winamp`, providing:
+- Play/Pause/Stop/Next/Previous via media keys
+- Track metadata to desktop environments (KDE, GNOME, etc.)
+- Volume control via system mixer
 
 ## Differences from Windows Version
 
 ### By Design
-- Uses Qt6 Multimedia instead of DirectSound
+- Uses Qt Multimedia instead of DirectSound
 - Uses Qt's event loop instead of Win32 message loop
 - Native Linux window management
-- XDG-compliant file paths (~/.config/winamp)
+- XDG-compliant file paths (`~/.config/winamp/`)
+- MPRIS2 instead of Windows global hotkeys
 
 ### Temporary Limitations
+- Modern skins not supported (classic skins work)
 - Some plugins not yet ported
-- **Modern skins not supported** — XML/Wasabi/Bento skin engine is not yet ported to Qt6.
-  The "Modern Skins" page in Preferences shows a notice instead of a skin picker.
-  Classic skins (.wsz) work normally.
-- Media library not implemented
-- No Milkdrop visualization yet
+- EQ DSP requires Qt 6.8+ (renders silently on older versions)
 
 ## Contributing
 
 This is a massive undertaking. Contributions welcome!
 
 Priority areas:
-1. Skin rendering system
+1. Modern skin engine (XML/Wasabi)
 2. Plugin framework adaptation
-3. Visualization plugins (especially Milkdrop)
+3. Testing across Qt5 distributions
 4. Input format plugins
 5. Output backend optimization
-6. Testing and bug fixes
 
 ## License
 
@@ -245,11 +208,12 @@ Same as original Winamp source code. See LICENSE.md.
 ## Credits
 
 - Original Winamp by Nullsoft/AOL/Radionomy
-- Linux port using Qt6 framework
+- Linux port by Kristopher Craig
+- Qt5/Qt6 compatibility layer
 - Community contributors
 
 ## Resources
 
 - [Qt6 Documentation](https://doc.qt.io/qt-6/)
+- [Qt5 Documentation](https://doc.qt.io/qt-5/)
 - [Original Winamp Plugin SDK](https://github.com/WinampDesktop/winamp)
-- [Wasabi SDK Documentation](https://wiki.winamp.com/wiki/Wasabi_SDK)

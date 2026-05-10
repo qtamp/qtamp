@@ -5,14 +5,30 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL OpenGLWidgets)
-
-# Qt6 DBus for MPRIS2 media player desktop integration (optional)
-find_package(Qt6 COMPONENTS DBus QUIET)
-if(Qt6DBus_FOUND)
-    message(STATUS "Qt6 DBus found — MPRIS2 media player integration enabled")
+# Try Qt6 first, fall back to Qt5
+find_package(Qt6 QUIET COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL OpenGLWidgets)
+if(Qt6_FOUND)
+    set(QT_VERSION_MAJOR 6)
+    message(STATUS "Building with Qt6")
+    find_package(Qt6 COMPONENTS DBus QUIET)
+    if(Qt6DBus_FOUND)
+        message(STATUS "Qt6 DBus found — MPRIS2 media player integration enabled")
+    else()
+        message(STATUS "Qt6 DBus not found — MPRIS2 disabled (media keys won't work)")
+    endif()
 else()
-    message(STATUS "Qt6 DBus not found — MPRIS2 disabled (media keys won't work)")
+    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL)
+    set(QT_VERSION_MAJOR 5)
+    message(STATUS "Building with Qt5 (${Qt5Core_VERSION})")
+    if(Qt5Core_VERSION VERSION_LESS "5.12")
+        message(FATAL_ERROR "Qt 5.12 or later is required")
+    endif()
+    find_package(Qt5 COMPONENTS DBus QUIET)
+    if(Qt5DBus_FOUND)
+        message(STATUS "Qt5 DBus found — MPRIS2 media player integration enabled")
+    else()
+        message(STATUS "Qt5 DBus not found — MPRIS2 disabled (media keys won't work)")
+    endif()
 endif()
 
 # projectM — Milkdrop-compatible visualization engine (optional)
@@ -47,14 +63,17 @@ add_executable(winamp
 target_include_directories(winamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_link_libraries(winamp
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Widgets
-    Qt6::Multimedia
-    Qt6::MultimediaWidgets
-    Qt6::OpenGL
-    Qt6::OpenGLWidgets
+    Qt${QT_VERSION_MAJOR}::Core
+    Qt${QT_VERSION_MAJOR}::Gui
+    Qt${QT_VERSION_MAJOR}::Widgets
+    Qt${QT_VERSION_MAJOR}::Multimedia
+    Qt${QT_VERSION_MAJOR}::MultimediaWidgets
+    Qt${QT_VERSION_MAJOR}::OpenGL
 )
+# Qt6 splits OpenGLWidgets into its own module; Qt5 includes it in Widgets
+if(QT_VERSION_MAJOR EQUAL 6)
+    target_link_libraries(winamp Qt6::OpenGLWidgets)
+endif()
 
 # Set RPATH so the binary finds bundled libs in /usr/lib/winamp/
 set_target_properties(winamp PROPERTIES
@@ -102,9 +121,12 @@ if(PROJECTM_LIB)
     endif()
 endif()
 
-# Conditionally link Qt6 DBus if available
-if(Qt6DBus_FOUND)
+# Conditionally link Qt DBus if available
+if(QT_VERSION_MAJOR EQUAL 6 AND Qt6DBus_FOUND)
     target_link_libraries(winamp Qt6::DBus)
+    target_compile_definitions(winamp PRIVATE QT_DBUS_LIB)
+elseif(QT_VERSION_MAJOR EQUAL 5 AND Qt5DBus_FOUND)
+    target_link_libraries(winamp Qt5::DBus)
     target_compile_definitions(winamp PRIVATE QT_DBUS_LIB)
 endif()
 

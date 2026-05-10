@@ -154,30 +154,34 @@ FileInfoDialog::FileInfoDialog(const QString &filePath, QMediaPlayer *player, QW
 
     // Load current metadata from player (matches Windows GetDlgItemTextW)
     if (m_player) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         QMediaMetaData meta = m_player->metaData();
         titleEdit->setText(meta.stringValue(QMediaMetaData::Title));
-
-        // Artist (ContributingArtist or AlbumArtist)
         QString artist = meta.stringValue(QMediaMetaData::AlbumArtist);
-        if (artist.isEmpty())
-            artist = meta.stringValue(QMediaMetaData::ContributingArtist);
+        if (artist.isEmpty()) artist = meta.stringValue(QMediaMetaData::ContributingArtist);
         artistEdit->setText(artist);
-
         albumEdit->setText(meta.stringValue(QMediaMetaData::AlbumTitle));
-
-        // Year from Date field
         QVariant dateVar = meta.value(QMediaMetaData::Date);
+        QVariant trackVar = meta.value(QMediaMetaData::TrackNumber);
+        genreEdit->setText(meta.stringValue(QMediaMetaData::Genre));
+        commentEdit->setPlainText(meta.stringValue(QMediaMetaData::Comment));
+#else
+        titleEdit->setText(m_player->metaData("Title").toString());
+        QString artist = m_player->metaData("AlbumArtist").toString();
+        if (artist.isEmpty()) artist = m_player->metaData("ContributingArtist").toString();
+        artistEdit->setText(artist);
+        albumEdit->setText(m_player->metaData("AlbumTitle").toString());
+        QVariant dateVar = m_player->metaData("Date");
+        QVariant trackVar = m_player->metaData("TrackNumber");
+        genreEdit->setText(m_player->metaData("Genre").toString());
+        commentEdit->setPlainText(m_player->metaData("Comment").toString());
+#endif
+
         if (dateVar.canConvert<QDate>()) {
             yearEdit->setText(QString::number(dateVar.toDate().year()));
         }
-
-        // Track number
-        QVariant trackVar = meta.value(QMediaMetaData::TrackNumber);
         if (trackVar.isValid())
             trackEdit->setText(trackVar.toString());
-
-        genreEdit->setText(meta.stringValue(QMediaMetaData::Genre));
-        commentEdit->setPlainText(meta.stringValue(QMediaMetaData::Comment));
     }
 
     tabs->addTab(metadataTab, "Metadata");
@@ -192,10 +196,15 @@ FileInfoDialog::FileInfoDialog(const QString &filePath, QMediaPlayer *player, QW
     techLayout->addRow("Modified:", new QLabel(fi.lastModified().toString("yyyy-MM-dd hh:mm:ss")));
 
     if (m_player) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         QMediaMetaData meta = m_player->metaData();
-
-        // Audio bitrate
         QVariant br = meta.value(QMediaMetaData::AudioBitRate);
+        QString codec = meta.stringValue(QMediaMetaData::AudioCodec);
+#else
+        QVariant br = m_player->metaData("AudioBitRate");
+        QString codec = m_player->metaData("AudioCodec").toString();
+#endif
+
         if (br.isValid()) {
             techLayout->addRow("Bitrate:", new QLabel(QString::number(br.toInt() / 1000) + " kbps"));
         }
@@ -211,8 +220,6 @@ FileInfoDialog::FileInfoDialog(const QString &filePath, QMediaPlayer *player, QW
             techLayout->addRow("Duration:", new QLabel(QString("%1:%2").arg(mins).arg(secs, 2, 10, QChar('0'))));
         }
 
-        // Audio codec
-        QString codec = meta.stringValue(QMediaMetaData::AudioCodec);
         if (!codec.isEmpty())
             techLayout->addRow("Codec:", new QLabel(codec));
     }
@@ -295,24 +302,23 @@ AboutDialog::AboutDialog(const QString &skinPath, QWidget *parent) : QDialog(par
     }
 
     // Credits text (from original creditsrend.c)
-    credits = {
-        "Winamp v5.9.0\n    The Credits",
-        "Linux Qt6 Port:\n    Kristopher Craig",
-        "Winamp for Linux\n    Qt6 Native Port",
-        "Original Development:\n Quentin Hebette, Thierry Honore,\n Lionel Peeters, Hakan Danisik,\n Eddy Richman, Jef Mauguit",
-        "QA, Engineering & Support:\n    DJ Egg",
-        "Freeform Skin Engine:\n    Linus Brolin",
-        "Bento Skin:\n    Martin Pohlmann, Taber Buhl,\n    Ben Allison, Victor Brocaz",
-        "Winamp Hall-of-Fame:\n    Justin Frankel,\n    Christophe Thibault,\n    Francis Gastellu,\n    Brennan Underwood",
-        "    Peter Pawlowski, Tom Pepper,\n    Ryan Geiss, Will Fisher,\n    Maksim Tyrtyshny, Darren Owen,\n    Ben Allison",
-        "Modern Skin:\n    Sven Kistner",
-        "PCM EQ magic:\n    4Front Technologies / George Yohng",
-        "Intro sound:\n    JJ McKay",
-        "Credits rendered with Plush:\n    http://www.cockos.com/wdl/\n    (8bpp foreva)",
-        "Thanks:\n    NS Beta Team & Craig Freer,\n    Our lowly forum moderators,\n    Our precious skin reviewers",
-        QString::fromUtf8("Copyright \u00A9 1997-2026 Winamp SA\n    www.winamp.com"),
-        "It really whips\n    the llama's ass!",
-    };
+    credits = QStringList()
+        << "Winamp v5.9.0\n    The Credits"
+        << "Linux Qt6 Port:\n    Kristopher Craig"
+        << "Winamp for Linux\n    Qt6 Native Port"
+        << "Original Development:\n Quentin Hebette, Thierry Honore,\n Lionel Peeters, Hakan Danisik,\n Eddy Richman, Jef Mauguit"
+        << "QA, Engineering & Support:\n    DJ Egg"
+        << "Freeform Skin Engine:\n    Linus Brolin"
+        << "Bento Skin:\n    Martin Pohlmann, Taber Buhl,\n    Ben Allison, Victor Brocaz"
+        << "Winamp Hall-of-Fame:\n    Justin Frankel,\n    Christophe Thibault,\n    Francis Gastellu,\n    Brennan Underwood"
+        << "    Peter Pawlowski, Tom Pepper,\n    Ryan Geiss, Will Fisher,\n    Maksim Tyrtyshny, Darren Owen,\n    Ben Allison"
+        << "Modern Skin:\n    Sven Kistner"
+        << "PCM EQ magic:\n    4Front Technologies / George Yohng"
+        << "Intro sound:\n    JJ McKay"
+        << "Credits rendered with Plush:\n    http://www.cockos.com/wdl/\n    (8bpp foreva)"
+        << "Thanks:\n    NS Beta Team & Craig Freer,\n    Our lowly forum moderators,\n    Our precious skin reviewers"
+        << QString::fromUtf8("Copyright \u00A9 1997-2026 Winamp SA\n    www.winamp.com")
+        << "It really whips\n    the llama's ass!";
 
     // Init starfield
     for (int i = 0; i < NUM_STARS; i++) {

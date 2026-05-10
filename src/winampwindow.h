@@ -1,12 +1,16 @@
 #pragma once
 #include <QWidget>
 #include <QMediaPlayer>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QAudioOutput>
+#endif
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
 #include <QAudioBufferOutput>
 #include <QAudioSink>
 #endif
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 #include <QMediaDevices>
+#endif
 #include <QIODevice>
 #include <QTimer>
 #include <QSystemTrayIcon>
@@ -107,12 +111,16 @@ protected:
 
 private:
     QMediaPlayer *player;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     QAudioOutput *audioOutput;
+#endif
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     QAudioBufferOutput *audioBufferOutput;
 #endif
     QMediaPlayer *nextPlayer;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     QAudioOutput *nextAudioOutput;
+#endif
     bool usingNextPlayer;
     
     // EQ DSP processing

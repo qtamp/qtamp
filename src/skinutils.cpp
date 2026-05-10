@@ -1,4 +1,5 @@
 #include "skinutils.h"
+#include <QDebug>
 #include <cmath>
 
 // Global skin playlist colors

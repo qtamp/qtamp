@@ -40,7 +40,11 @@ signals:
     void internalDragFinished();
     
 protected:
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     QMimeData* mimeData(const QList<QListWidgetItem*> &items) const override {
+#else
+    QMimeData* mimeData(const QList<QListWidgetItem*> items) const override {
+#endif
         QMimeData *data = new QMimeData();
         QList<QUrl> urls;
         
@@ -96,16 +100,28 @@ protected:
         if (event->source() == this) {
             event->acceptProposedAction();
             // report the logical row under the mouse to the parent for live-swap
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             int row = indexAt(event->position().toPoint()).row();
+#else
+            int row = indexAt(event->pos()).row();
+#endif
             if (row < 0) row = count() - 1;
             emit internalDragMoved(row);
             // simple autoscroll when near edges
             const int margin = 18;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             if (event->position().toPoint().y() < margin) {
                 verticalScrollBar()->setValue(verticalScrollBar()->value() - 1);
             } else if (event->position().toPoint().y() > height() - margin) {
                 verticalScrollBar()->setValue(verticalScrollBar()->value() + 1);
             }
+#else
+            if (event->pos().y() < margin) {
+                verticalScrollBar()->setValue(verticalScrollBar()->value() - 1);
+            } else if (event->pos().y() > height() - margin) {
+                verticalScrollBar()->setValue(verticalScrollBar()->value() + 1);
+            }
+#endif
             return;
         }
 

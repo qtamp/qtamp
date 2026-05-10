@@ -2,6 +2,10 @@
 
 #include "mpris2.h"
 
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+#include <QMediaContent>
+#endif
+
 // Forward declarations for MPRIS2 methods that reference WinampWindow/PlaylistWindow
 // These are implemented in mpris2_impl.cpp where the full type definitions are available
 // The simple methods are here.
@@ -15,9 +19,9 @@ void Mpris2RootAdaptor::Raise() {
 
 void Mpris2RootAdaptor::Quit() { QApplication::quit(); }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 Mpris2PlayerAdaptor::Mpris2PlayerAdaptor(QMediaPlayer *player, QAudioOutput *audioOut, QObject *parent)
     : QDBusAbstractAdaptor(parent), m_player(player), m_audioOutput(audioOut) {
-    
     connect(m_player, &QMediaPlayer::playbackStateChanged, this, [this]() {
         emitPropertyChanged("PlaybackStatus", playbackStatus());
     });
@@ -25,9 +29,26 @@ Mpris2PlayerAdaptor::Mpris2PlayerAdaptor(QMediaPlayer *player, QAudioOutput *aud
         emitPropertyChanged("Metadata", metadata());
     });
 }
+#else
+Mpris2PlayerAdaptor::Mpris2PlayerAdaptor(QMediaPlayer *player, QObject *parent)
+    : QDBusAbstractAdaptor(parent), m_player(player) {
+    connect(m_player, &QMediaPlayer::stateChanged, this, [this]() {
+        emitPropertyChanged("PlaybackStatus", playbackStatus());
+    });
+    // Qt5 overloads metaDataChanged — use metaDataAvailableChanged instead
+    connect(m_player, &QMediaPlayer::metaDataAvailableChanged, this, [this](bool available) {
+        Q_UNUSED(available);
+        emitPropertyChanged("Metadata", metadata());
+    });
+}
+#endif
 
 QString Mpris2PlayerAdaptor::playbackStatus() const {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     switch (m_player->playbackState()) {
+#else
+    switch (m_player->state()) {
+#endif
         case QMediaPlayer::PlayingState: return "Playing";
         case QMediaPlayer::PausedState: return "Paused";
         default: return "Stopped";
@@ -40,25 +61,44 @@ QVariantMap Mpris2PlayerAdaptor::metadata() const {
     if (m_player->duration() > 0)
         map["mpris:length"] = m_player->duration() * 1000; // microseconds
     
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     QMediaMetaData meta = m_player->metaData();
     QString title = meta.stringValue(QMediaMetaData::Title);
-    if (!title.isEmpty()) map["xesam:title"] = title;
-    
     QString artist = meta.stringValue(QMediaMetaData::AlbumArtist);
     if (artist.isEmpty()) artist = meta.stringValue(QMediaMetaData::ContributingArtist);
-    if (!artist.isEmpty()) map["xesam:artist"] = QStringList{artist};
-    
     QString album = meta.stringValue(QMediaMetaData::AlbumTitle);
-    if (!album.isEmpty()) map["xesam:album"] = album;
-    
     QUrl source = m_player->source();
+#else
+    QString title = m_player->metaData("Title").toString();
+    QString artist = m_player->metaData("AlbumArtist").toString();
+    if (artist.isEmpty()) artist = m_player->metaData("ContributingArtist").toString();
+    QString album = m_player->metaData("AlbumTitle").toString();
+    QUrl source = m_player->media().canonicalUrl();
+#endif
+
+    if (!title.isEmpty()) map["xesam:title"] = title;
+    if (!artist.isEmpty()) map["xesam:artist"] = QStringList{artist};
+    if (!album.isEmpty()) map["xesam:album"] = album;
     if (source.isValid()) map["xesam:url"] = source.toString();
     
     return map;
 }
 
-double Mpris2PlayerAdaptor::volume() const { return m_audioOutput->volume(); }
-void Mpris2PlayerAdaptor::setVolume(double v) { m_audioOutput->setVolume(qBound(0.0, v, 1.0)); }
+double Mpris2PlayerAdaptor::volume() const {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return m_audioOutput->volume();
+#else
+    return m_player->volume() / 100.0;
+#endif
+}
+
+void Mpris2PlayerAdaptor::setVolume(double v) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    m_audioOutput->setVolume(qBound(0.0, v, 1.0));
+#else
+    m_player->setVolume(qBound(0, static_cast<int>(v * 100), 100));
+#endif
+}
 
 qlonglong Mpris2PlayerAdaptor::position() const { return m_player->position() * 1000; }
 
@@ -66,7 +106,11 @@ bool Mpris2PlayerAdaptor::canSeek() const { return m_player->duration() > 0; }
 
 void Mpris2PlayerAdaptor::Pause() { m_player->pause(); }
 void Mpris2PlayerAdaptor::PlayPause() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     if (m_player->playbackState() == QMediaPlayer::PlayingState)
+#else
+    if (m_player->state() == QMediaPlayer::PlayingState)
+#endif
         m_player->pause();
     else
         m_player->play();
