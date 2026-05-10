@@ -21,13 +21,12 @@
 #  include <WasabiQt/SkinView.h>
 #  include <WasabiQt/Layout.h>
 #  include <WasabiQt/BitmapRegistry.h>
+#  include <WasabiQt/Host.h>
 #  include <QAudioOutput>
-#  include <QFileDialog>
 #  include <QImage>
 #  include <QKeyEvent>
 #  include <QMediaPlayer>
 #  include <QMouseEvent>
-#  include <QStandardPaths>
 #  include <QUrl>
 #  include <QWindow>
 namespace {
@@ -48,49 +47,113 @@ QSize qtampImageSize(const QString &bitmapId, void *userdata) {
 #endif
 
 #ifdef WINAMP_HAVE_WASABIQT
+
+// QtampHost — Qtamp's WasabiQt::Host implementation.  Shovels live
+// QMediaPlayer state through the abstract Host interface qtWasabi
+// expects, so qtWasabi's default DisplayResolver + dispatchAction
+// helpers can do the actual skin-format-convention work.
+class QtampPlayerWindow;
+class QtampHost : public WasabiQt::Host {
+public:
+    QtampHost() {
+        m_player.setAudioOutput(&m_audio);
+        m_audio.setVolume(qreal(0.7));
+    }
+
+    void bindWindow(QtampPlayerWindow *w) { m_window = w; }
+
+    QMediaPlayer       &player()       { return m_player; }
+    const QMediaPlayer &player() const { return m_player; }
+
+    // ── Read state ─────────────────────────────────────────────
+    qint64  positionMs() const override { return m_player.position(); }
+    qint64  durationMs() const override { return m_player.duration(); }
+    bool    isPlaying() const override {
+        return m_player.playbackState() == QMediaPlayer::PlayingState;
+    }
+    bool    isPaused() const override {
+        return m_player.playbackState() == QMediaPlayer::PausedState;
+    }
+    int     volume() const override {
+        return int(qBound(qreal(0), m_audio.volume(), qreal(1)) * 100);
+    }
+    QString songTitle() const override {
+        const QUrl src = m_player.source();
+        if (src.isLocalFile())
+            return QFileInfo(src.toLocalFile()).completeBaseName();
+        return src.toString();
+    }
+    QString songFilename() const override {
+        const QUrl src = m_player.source();
+        return src.isLocalFile()
+            ? QFileInfo(src.toLocalFile()).fileName()
+            : src.toString();
+    }
+
+    // ── Transport ──────────────────────────────────────────────
+    void play()  override { m_player.play(); }
+    void pause() override { m_player.pause(); }
+    void stop()  override { m_player.stop(); }
+    void seekMs(qint64 ms) override { m_player.setPosition(ms); }
+    void setVolume(int v) override {
+        m_audio.setVolume(qBound(0, v, 100) / qreal(100));
+    }
+
+    // ── EJECT — pick a file AND start playing it.  Overrides the
+    //    base default (which only picks) so the EJECT action does
+    //    what users expect.
+    QUrl pickFile(QWidget *embedder) override;
+
+    // ── Window control — implemented via the bound window.
+    bool close()    override;
+    bool minimize() override;
+
+private:
+    QMediaPlayer  m_player;
+    QAudioOutput  m_audio;
+    QtampPlayerWindow *m_window = nullptr;
+};
+
 // Player-window wrapper around qtWasabi's SkinView.  Modern skins
 // paint their own chrome (titlebar, buttons, borders), so the host
 // window has to be frameless and the click-on-empty-area drag has
 // to be implemented by the embedder.  ESC closes; drag-and-move
 // works via QWindow::startSystemMove() on Wayland and a manual
-// move() fallback elsewhere.
+// move() fallback elsewhere.  All transport / display logic lives
+// in QtampHost; this class is just window shell + input routing.
 class QtampPlayerWindow : public WasabiQt::SkinView {
 public:
-    explicit QtampPlayerWindow(QWidget *parent = nullptr)
-        : WasabiQt::SkinView(parent) {
+    explicit QtampPlayerWindow(QtampHost *host, QWidget *parent = nullptr)
+        : WasabiQt::SkinView(parent), m_host(host) {
         setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
         setAttribute(Qt::WA_TranslucentBackground);
-        m_player.setAudioOutput(&m_audio);
-        m_audio.setVolume(qreal(0.7));
 
-        // Wire up display widgets — <text display="time">, <text
-        // display="songname">, etc. — so the chrome shows live track
-        // info instead of empty default strings.
-        setDisplayResolver([this](const QString &key) -> QString {
-            return resolveDisplay(key);
-        });
+        // qtWasabi's default DisplayResolver knows the standard
+        // Wasabi display keys (time / songtitle / kbps / khz / …)
+        // and pulls them from the Host.
+        setDisplayResolver(WasabiQt::makeDefaultDisplayResolver(host));
 
-        // 200ms repaint cadence so the time text ticks visibly while
-        // playback is running.  Cheap; SkinView's paintEvent is a
-        // single TreePainter walk over the same tree.
+        // 200ms repaint cadence so the time text ticks visibly
+        // while playback is running.
         auto *tick = new QTimer(this);
         tick->setInterval(200);
         connect(tick, &QTimer::timeout, this,
                 qOverload<>(&QWidget::update));
         tick->start();
 
-        // And immediate repaints when transport state / source changes.
-        connect(&m_player, &QMediaPlayer::sourceChanged, this,
+        // Immediate repaint when transport state / source changes.
+        connect(&host->player(), &QMediaPlayer::sourceChanged, this,
                 [this](const QUrl &) { update(); });
-        connect(&m_player, &QMediaPlayer::playbackStateChanged, this,
-                [this](QMediaPlayer::PlaybackState) { update(); });
+        connect(&host->player(), &QMediaPlayer::playbackStateChanged,
+                this, [this](QMediaPlayer::PlaybackState) { update(); });
     }
 
 protected:
     void mousePressEvent(QMouseEvent *e) override {
         if (e->button() == Qt::LeftButton) {
-            // Hit-test against the resolved layout — if a widget
-            // with a known action= caught the click, dispatch it.
+            // Hit-test against the resolved layout; if a widget
+            // with action= caught the click, hand to qtWasabi's
+            // default action dispatcher.
             const QPoint p = e->position().toPoint();
             const auto *hit = WasabiQt::Layout::hitTest(
                 tree(), p, /*actionOnly=*/true,
@@ -98,7 +161,10 @@ protected:
             if (hit) {
                 const QString action =
                     hit->attrs.value(QStringLiteral("action"));
-                if (dispatchAction(action.toUpper())) return;
+                fprintf(stderr, "[qtamp] action: %s\n",
+                        action.toUpper().toLocal8Bit().constData());
+                if (WasabiQt::dispatchAction(action, m_host, this))
+                    return;
             }
             // Empty-area click — start a window drag.
             if (windowHandle() && windowHandle()->startSystemMove())
@@ -121,112 +187,50 @@ protected:
     }
     void keyPressEvent(QKeyEvent *e) override {
         const bool ctrl = e->modifiers() & Qt::ControlModifier;
-        if (e->key() == Qt::Key_Escape)               { close(); return; }
-        if (ctrl && e->key() == Qt::Key_O)            { openFileDialog(); return; }
-        if (ctrl && e->key() == Qt::Key_L)            { openFileDialog(); return; }
-        if (e->key() == Qt::Key_Space)                {
-            if (m_player.playbackState() == QMediaPlayer::PlayingState)
-                m_player.pause();
-            else
-                m_player.play();
+        if (e->key() == Qt::Key_Escape) { close(); return; }
+        if (ctrl && (e->key() == Qt::Key_O || e->key() == Qt::Key_L)) {
+            const QUrl u = m_host->pickFile(this);
+            if (!u.isEmpty()) {
+                m_host->player().setSource(u);
+                m_host->player().play();
+            }
             return;
         }
-        if (e->key() == Qt::Key_MediaPlay)            { m_player.play();  return; }
-        if (e->key() == Qt::Key_MediaPause)           { m_player.pause(); return; }
-        if (e->key() == Qt::Key_MediaStop)            { m_player.stop();  return; }
+        if (e->key() == Qt::Key_Space) {
+            m_host->isPlaying() ? m_host->pause() : m_host->play();
+            return;
+        }
+        if (e->key() == Qt::Key_MediaPlay)  { m_host->play();  return; }
+        if (e->key() == Qt::Key_MediaPause) { m_host->pause(); return; }
+        if (e->key() == Qt::Key_MediaStop)  { m_host->stop();  return; }
         WasabiQt::SkinView::keyPressEvent(e);
     }
 
 private:
-    // Map a Wasabi <text display="key"/> attribute onto a live string.
-    // Recognised keys come from the WinampModernPP / Modern-skin
-    // family — everything else falls through to an empty string,
-    // which lets the widget fall back to its `default=` attribute.
-    QString resolveDisplay(const QString &key) const {
-        const QString k = key.toLower();
-        if (k == QStringLiteral("time")) {
-            const qint64 ms = m_player.position();
-            const qint64 secTotal = ms / 1000;
-            const qint64 m = secTotal / 60;
-            const qint64 s = secTotal % 60;
-            return QStringLiteral("%1:%2")
-                .arg(m).arg(s, 2, 10, QChar('0'));
-        }
-        if (k == QStringLiteral("timeleft")) {
-            const qint64 left =
-                qMax<qint64>(0, m_player.duration() - m_player.position());
-            const qint64 secTotal = left / 1000;
-            const qint64 m = secTotal / 60;
-            const qint64 s = secTotal % 60;
-            return QStringLiteral("-%1:%2")
-                .arg(m).arg(s, 2, 10, QChar('0'));
-        }
-        if (k == QStringLiteral("duration")) {
-            const qint64 ms = m_player.duration();
-            const qint64 secTotal = ms / 1000;
-            const qint64 m = secTotal / 60;
-            const qint64 s = secTotal % 60;
-            return QStringLiteral("%1:%2")
-                .arg(m).arg(s, 2, 10, QChar('0'));
-        }
-        if (k == QStringLiteral("songname") ||
-            k == QStringLiteral("songtitle") ||
-            k == QStringLiteral("songinfo")) {
-            const QUrl src = m_player.source();
-            if (src.isLocalFile())
-                return QFileInfo(src.toLocalFile()).completeBaseName();
-            if (!src.isEmpty())
-                return src.toString();
-            return QStringLiteral("(no song loaded)");
-        }
-        if (k == QStringLiteral("filename")) {
-            const QUrl src = m_player.source();
-            return src.isLocalFile()
-                ? QFileInfo(src.toLocalFile()).fileName()
-                : src.toString();
-        }
-        if (k == QStringLiteral("kbps") ||
-            k == QStringLiteral("bitrate")) {
-            return QStringLiteral("0");
-        }
-        if (k == QStringLiteral("khz") ||
-            k == QStringLiteral("samplerate")) {
-            return QStringLiteral("0");
-        }
-        return QString();
-    }
+    QtampHost *m_host = nullptr;
+    QPoint     m_dragOrigin;
+    bool       m_dragging = false;
+};
 
-    bool dispatchAction(const QString &action) {
-        fprintf(stderr, "[qtamp] action: %s\n",
-                action.toLocal8Bit().constData());
-        if (action == QLatin1String("PLAY"))     { m_player.play();  return true; }
-        if (action == QLatin1String("PAUSE"))    { m_player.pause(); return true; }
-        if (action == QLatin1String("STOP"))     { m_player.stop();  return true; }
-        if (action == QLatin1String("EJECT"))    { openFileDialog(); return true; }
-        if (action == QLatin1String("CLOSE"))    { close();          return true; }
-        if (action == QLatin1String("MINIMIZE")) { showMinimized();  return true; }
-        if (action == QLatin1String("NEXT"))     { /* TODO: playlist */ return true; }
-        if (action == QLatin1String("PREV"))     { /* TODO: playlist */ return true; }
-        return false;
-    }
-
-    void openFileDialog() {
-        const QString musicDir = QStandardPaths::writableLocation(
-            QStandardPaths::MusicLocation);
-        const QString path = QFileDialog::getOpenFileName(
-            this, "Qtamp — Open audio file", musicDir,
-            "Audio (*.mp3 *.flac *.ogg *.opus *.wav *.m4a *.aac);;"
-            "All files (*)");
-        if (path.isEmpty()) return;
-        m_player.setSource(QUrl::fromLocalFile(path));
+// ── QtampHost methods that need QtampPlayerWindow to be defined ──
+inline QUrl QtampHost::pickFile(QWidget *embedder) {
+    const QUrl u = WasabiQt::Host::pickFile(embedder);
+    if (!u.isEmpty()) {
+        m_player.setSource(u);
         m_player.play();
     }
+    return u;
+}
 
-    QMediaPlayer m_player;
-    QAudioOutput m_audio;
-    QPoint m_dragOrigin;
-    bool   m_dragging = false;
-};
+inline bool QtampHost::close() {
+    if (m_window) m_window->close();
+    return m_window != nullptr;
+}
+
+inline bool QtampHost::minimize() {
+    if (m_window) m_window->showMinimized();
+    return m_window != nullptr;
+}
 #endif
 
 namespace {
@@ -296,7 +300,9 @@ int main(int argc, char *argv[]) {
       return 3;
     }
 
-    auto *view = new QtampPlayerWindow();
+    auto *host = new QtampHost();
+    auto *view = new QtampPlayerWindow(host);
+    host->bindWindow(view);
     if (!view->load(doc, "main", "normal", &err)) {
       fprintf(stderr, "qtamp: layout load failed: %s\n", err.toLocal8Bit().constData());
       return 4;
