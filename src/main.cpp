@@ -244,6 +244,17 @@ public:
     }
     int     channelCount() const override { return m_lastChannels; }
     int     sampleRate()   const override { return m_lastSampleRate; }
+    int     bitrate() const override {
+        // QMediaPlayer exposes the decoded stream's bitrate in
+        // bits-per-second via QMediaMetaData::AudioBitRate; convert
+        // to kbps (host convention) for the kbps display.
+        const QVariant v = m_player.metaData()
+            .value(QMediaMetaData::AudioBitRate);
+        if (!v.isValid()) return 0;
+        bool ok = false;
+        const int bps = v.toInt(&ok);
+        return ok ? bps / 1000 : 0;
+    }
     QString songTitle() const override {
         const QUrl src = m_player.source();
         if (src.isLocalFile())
