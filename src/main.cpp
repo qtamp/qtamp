@@ -24,6 +24,7 @@
 #  include <WasabiQt/Layout.h>
 #  include <WasabiQt/BitmapRegistry.h>
 #  include <WasabiQt/Host.h>
+#  include <WasabiQt/TreePainter.h>
 #  include <QAudioBuffer>
 #  include <QAudioBufferOutput>
 #  include <QAudioOutput>
@@ -34,6 +35,17 @@
 #  include <QMenu>
 #  include <QMessageBox>
 #  include <QMouseEvent>
+#  include <QPushButton>
+#  include <QStandardPaths>
+#  include <QListWidget>
+#  include <QListWidgetItem>
+#  include <QStackedWidget>
+#  include <QTreeWidget>
+#  include <QTreeWidgetItem>
+#  include <QVBoxLayout>
+#  include <QHBoxLayout>
+#  include <QDialog>
+#  include <QLabel>
 #  include <QUrl>
 #  include <QWindow>
 #  include <cmath>
@@ -54,7 +66,143 @@ QSize qtampImageSize(const QString &bitmapId, void *userdata) {
 }  // namespace
 #endif
 
+#include "dialogs.h"
+#include "bookmarkmanager.h"
+#include "recentfilesmanager.h"
+#include "skinutils.h"
+
 #ifdef WINAMP_HAVE_WASABIQT
+
+// (Preferences + About + Jump-to-File + Play-Location dialogs live
+// in dialogs.{h,cpp} — ported verbatim from lord3nd3r/winamp-linux
+// so the UI matches the upstream player exactly.)
+#if 0  /* legacy inline-prefs stub, kept for reference */
+class QtampPreferencesDialog : public QDialog {
+    Q_OBJECT
+public:
+    explicit QtampPreferencesDialog(QWidget *parent = nullptr)
+        : QDialog(parent) {
+        setWindowTitle(tr("Preferences"));
+        resize(640, 420);
+
+        treeWidget = new QTreeWidget(this);
+        treeWidget->setHeaderHidden(true);
+        treeWidget->setMaximumWidth(180);
+        auto *general    = new QTreeWidgetItem({ tr("General") });
+        auto *skins      = new QTreeWidgetItem({ tr("Skins") });
+        auto *modernSkin = new QTreeWidgetItem(skins, { tr("Modern Skins") });
+        auto *playback   = new QTreeWidgetItem({ tr("Playback") });
+        auto *bookmarks  = new QTreeWidgetItem({ tr("Bookmarks") });
+        auto *vis        = new QTreeWidgetItem({ tr("Visualization") });
+        treeWidget->addTopLevelItem(general);
+        treeWidget->addTopLevelItem(skins);
+        treeWidget->addTopLevelItem(playback);
+        treeWidget->addTopLevelItem(bookmarks);
+        treeWidget->addTopLevelItem(vis);
+        skins->setExpanded(true);
+
+        stackedWidget = new QStackedWidget(this);
+        m_pageGeneral   = stackedWidget->addWidget(makePlaceholder(tr("General settings")));
+        m_pageSkins     = stackedWidget->addWidget(makePlaceholder(tr("Pick a sub-category.")));
+        m_pageModern    = stackedWidget->addWidget(createModernSkinsPage());
+        m_pagePlayback  = stackedWidget->addWidget(makePlaceholder(tr("Playback")));
+        m_pageBookmarks = stackedWidget->addWidget(makePlaceholder(tr("Bookmarks")));
+        m_pageVis       = stackedWidget->addWidget(makePlaceholder(tr("Visualization")));
+
+        QHash<QTreeWidgetItem *, int> pageOf;
+        pageOf[general]    = m_pageGeneral;
+        pageOf[skins]      = m_pageSkins;
+        pageOf[modernSkin] = m_pageModern;
+        pageOf[playback]   = m_pagePlayback;
+        pageOf[bookmarks]  = m_pageBookmarks;
+        pageOf[vis]        = m_pageVis;
+        connect(treeWidget, &QTreeWidget::currentItemChanged,
+                this, [this, pageOf](QTreeWidgetItem *cur, QTreeWidgetItem *) {
+            const int idx = pageOf.value(cur, -1);
+            if (idx >= 0) stackedWidget->setCurrentIndex(idx);
+        });
+        treeWidget->setCurrentItem(modernSkin);   // open on skin picker
+
+        auto *closeBtn = new QPushButton(tr("Close"), this);
+        connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
+
+        auto *row = new QHBoxLayout;
+        row->addWidget(treeWidget);
+        row->addWidget(stackedWidget, 1);
+
+        auto *col = new QVBoxLayout(this);
+        col->addLayout(row, 1);
+        auto *btnRow = new QHBoxLayout;
+        btnRow->addStretch(1);
+        btnRow->addWidget(closeBtn);
+        col->addLayout(btnRow);
+    }
+
+signals:
+    void skinChanged(const QString &skinPath);
+
+private:
+    QWidget *makePlaceholder(const QString &text) {
+        auto *w = new QWidget;
+        auto *l = new QVBoxLayout(w);
+        auto *lbl = new QLabel(text, w);
+        lbl->setAlignment(Qt::AlignCenter);
+        l->addWidget(lbl);
+        return w;
+    }
+
+    QWidget *createModernSkinsPage() {
+        auto *w = new QWidget;
+        auto *l = new QVBoxLayout(w);
+        l->addWidget(new QLabel(tr("Modern Skins"), w));
+        m_modernList = new QListWidget(w);
+        l->addWidget(m_modernList, 1);
+        populateModernSkins();
+        connect(m_modernList, &QListWidget::itemActivated,
+                this, &QtampPreferencesDialog::onModernSkinSelected);
+        auto *applyBtn = new QPushButton(tr("Apply"), w);
+        connect(applyBtn, &QPushButton::clicked, this, [this]() {
+            if (m_modernList->currentItem())
+                onModernSkinSelected(m_modernList->currentItem());
+        });
+        l->addWidget(applyBtn);
+        return w;
+    }
+
+    void populateModernSkins() {
+        // Scan ~/.winamp/skins/<name>/skin.xml — the upstream
+        // location every Modern-skin distribution drops into.
+        const QString skinsRoot = QDir::homePath() +
+                                  QStringLiteral("/.winamp/skins");
+        QDir d(skinsRoot);
+        if (!d.exists()) {
+            m_modernList->addItem(tr("(no ~/.winamp/skins directory)"));
+            return;
+        }
+        const auto entries = d.entryList(
+            QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QString &name : entries) {
+            const QString path = d.absoluteFilePath(name) +
+                                  QStringLiteral("/skin.xml");
+            if (QFile::exists(path)) {
+                auto *item = new QListWidgetItem(name, m_modernList);
+                item->setData(Qt::UserRole, path);
+            }
+        }
+    }
+
+    void onModernSkinSelected(QListWidgetItem *item) {
+        const QString path = item->data(Qt::UserRole).toString();
+        if (!path.isEmpty()) emit skinChanged(path);
+    }
+
+    QTreeWidget    *treeWidget;
+    QStackedWidget *stackedWidget;
+    QListWidget    *m_modernList = nullptr;
+    int m_pageGeneral=0, m_pageSkins=0, m_pageModern=0,
+        m_pagePlayback=0, m_pageBookmarks=0, m_pageVis=0;
+};
+#endif  /* legacy inline-prefs stub */
 
 // QtampHost — Qtamp's WasabiQt::Host implementation.  Shovels live
 // QMediaPlayer state through the abstract Host interface qtWasabi
@@ -219,13 +367,51 @@ public:
                 this, [this](QMediaPlayer::PlaybackState) { update(); });
     }
 
+    // ── Colour-themes list state (app-level) ──────────────────
+    int     colorThemesSelectedRow() const { return m_ctSelectedRow; }
+    void    setColorThemesSelectedRow(int row) {
+        m_ctSelectedRow = row;
+        update();
+    }
+    int     colorThemesTopRow() const { return m_ctTopRow; }
+    void    setColorThemesTopRow(int row) {
+        m_ctTopRow = row;
+        update();
+    }
+    QRect   colorThemesListRect() const { return m_ctListRect; }
+
+protected:
+    // Re-implement SkinView's paint so the app's colour-themes
+    // list state (selectedRow / topRow / out-bbox) threads into
+    // qtWasabi's TreePainter without the engine having to know
+    // about that state.  qtWasabi stays a pure renderer.
+    void paintEvent(QPaintEvent *) override {
+        QImage buf(size(), QImage::Format_ARGB32_Premultiplied);
+        buf.fill(Qt::transparent);
+        {
+            QPainter bp(&buf);
+            if (!windowRegion().isEmpty())
+                bp.setClipRegion(windowRegion());
+            m_ctListRect = QRect();
+            WasabiQt::TreePainter::paintTree(
+                &bp, tree(), registry(), fonts(),
+                size(), host(), &gammasets(), &colors(),
+                m_ctSelectedRow, m_ctTopRow,
+                &m_ctListRect, &m_ctTopRow);
+        }
+        QPainter p(this);
+        p.setClipping(false);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.drawImage(0, 0, buf);
+    }
+
 protected:
     void mousePressEvent(QMouseEvent *e) override {
         if (e->button() == Qt::RightButton) {
-            // Right-click → Winamp-style context menu.  Ported
-            // from winamp-linux's WinampWindow::showContextMenu
-            // (original author: 3nd3r <lord3nd3r@gmail.com>) and
-            // adapted to qtamp's WasabiQt::Host transport surface.
+            // Right-click anywhere → Winamp-style context menu.
+            // Ported from winamp-linux's WinampWindow::showContext
+            // Menu (originally written by 3nd3r) and adapted to
+            // qtamp's WasabiQt::Host transport surface.
             showContextMenu(e->globalPosition().toPoint());
             return;
         }
@@ -255,6 +441,130 @@ protected:
                 if (WasabiQt::dispatchAction(action, m_host, this))
                     return;
             }
+            // Drawer tab switcher: the three `mousetrapTab*` layers
+            // sit on top of each tab.  They don't carry `action=`
+            // attrs so the action-only hit-test above ignores them
+            // — fall through to a wider hit-test and dispatch
+            // tab-switch internally.  Region is unaffected (the
+            // tab cluster has no sysregion), so we just toggle the
+            // on/off variants and the content pages and repaint.
+            const auto *hit2 = WasabiQt::Layout::hitTest(
+                tree(), p, /*actionOnly=*/false,
+                qtampImageSize, &registry(), nullptr);
+            if (hit2) {
+                // The `.off` tab variants ship with a top-level
+                // `mousetrapTab*` layer, but the `.on` variants
+                // don't — clicking the active tab lands on its
+                // text label or Grid bg instead.  Match the tab
+                // by id pattern so any widget inside a tab group
+                // (mousetrap, label, or grid) counts as a click
+                // on that tab.
+                const QString id = hit2->id;
+                int newTab = 0;
+                if (id.contains(QLatin1String("TabEQ")) ||
+                    id.contains(QLatin1String("eq.on")) ||
+                    id.contains(QLatin1String("eq.off")))           newTab = 1;
+                else if (id.contains(QLatin1String("TabOPTIONS")) ||
+                         id.contains(QLatin1String("options.on")) ||
+                         id.contains(QLatin1String("options.off"))) newTab = 2;
+                else if (id.contains(QLatin1String("TabCOLORTHEMES")) ||
+                         id.contains(QLatin1String("colorthemes.on")) ||
+                         id.contains(QLatin1String("colorthemes.off"))) newTab = 3;
+                if (newTab != 0) {
+                    switchDrawerTab(newTab);
+                    update();
+                    return;
+                }
+            }
+            // ColorThemes list — clicking a row selects it; the
+            // Switch button (action=colorthemes_switch) then
+            // applies the chosen gammaset.  Hit-test the bbox the
+            // painter cached.  Also detect clicks in the
+            // scrollbar column on the right edge.
+            const QRect ctRect = colorThemesListRect();
+            if (ctRect.isValid()) {
+                if (ctRect.contains(p)) {
+                    const int rowH = 10;
+                    const int row = (p.y() - ctRect.y() - 2) / rowH;
+                    if (row >= 0) {
+                        setColorThemesSelectedRow(
+                            colorThemesTopRow() + row);
+                        return;
+                    }
+                }
+                // Scrollbar column sits in the 14 px to the right
+                // of the list rect (the painter reserves it).  The
+                // top 17 px is the up-arrow, the bottom 17 px is
+                // the down-arrow, and the 31 px thumb floats in
+                // the middle (drag to scroll).
+                const QRect sb(ctRect.right() + 1, ctRect.y(),
+                                14, ctRect.height());
+                if (sb.contains(p)) {
+                    const int arrowH = 17;
+                    const int thumbH = 31;
+                    // Top arrow: scroll up one row.
+                    if (p.y() < sb.y() + arrowH) {
+                        setColorThemesTopRow(qMax(0,
+                            colorThemesTopRow() - 1));
+                        return;
+                    }
+                    // Bottom arrow: scroll down one row.
+                    if (p.y() >= sb.y() + sb.height() - arrowH) {
+                        setColorThemesTopRow(
+                            colorThemesTopRow() + 1);
+                        return;
+                    }
+                    // Middle area: capture the start of a thumb
+                    // drag.  Compute the thumb's current rect so
+                    // the click point can be inside or outside it
+                    // (page jump on outside).
+                    const int trackTop = sb.y() + arrowH;
+                    const int trackBot = sb.y() + sb.height() - arrowH;
+                    const int travel   = qMax(0, (trackBot - trackTop) - thumbH);
+                    int nrows = gammasets().names().size();
+                    const int maxTop = qMax(0, nrows - 8);
+                    const double frac = maxTop > 0
+                        ? double(colorThemesTopRow()) / double(maxTop)
+                        : 0.0;
+                    const int thumbY = trackTop + int(frac * travel);
+                    if (p.y() >= thumbY && p.y() < thumbY + thumbH) {
+                        // Start drag tracking — store the y offset
+                        // from thumb's top so subsequent moves
+                        // keep the cursor aligned.
+                        m_ctDragging  = true;
+                        m_ctDragOffset = p.y() - thumbY;
+                        m_ctTrackTop  = trackTop;
+                        m_ctTrackBot  = trackBot;
+                        m_ctThumbH    = thumbH;
+                        m_ctMaxTop    = maxTop;
+                        return;
+                    }
+                    // Click in the empty track: page up/down.
+                    if (p.y() < thumbY)
+                        setColorThemesTopRow(qMax(0,
+                            colorThemesTopRow() - 4));
+                    else
+                        setColorThemesTopRow(
+                            colorThemesTopRow() + 4);
+                    return;
+                }
+            }
+            // Switch button under Color Themes tab — apply the
+            // selected gammaset.  XML wires it as
+            // action="colorthemes_switch".
+            if (hit2 && hit2->attrs.value(QStringLiteral("action"))
+                    .compare(QStringLiteral("colorthemes_switch"),
+                             Qt::CaseInsensitive) == 0) {
+                QStringList names = gammasets().names();
+                std::sort(names.begin(), names.end(),
+                          [](const QString &a, const QString &b){
+                              return a.compare(b, Qt::CaseInsensitive) < 0;
+                          });
+                const int row = colorThemesSelectedRow();
+                if (row >= 0 && row < names.size())
+                    setActiveGammaset(names[row]);
+                return;
+            }
             // Empty-area click — start a window drag.
             if (windowHandle() && windowHandle()->startSystemMove())
                 return;
@@ -271,6 +581,20 @@ protected:
             update();
             return;
         }
+        if (m_ctDragging && (e->buttons() & Qt::LeftButton)) {
+            // Map cursor y to thumb top, then to a row fraction.
+            const int y = e->position().toPoint().y();
+            const int wantThumbY = y - m_ctDragOffset;
+            const int travel = qMax(0,
+                (m_ctTrackBot - m_ctTrackTop) - m_ctThumbH);
+            const double frac = travel > 0
+                ? qBound(0.0,
+                    double(wantThumbY - m_ctTrackTop) / double(travel),
+                    1.0)
+                : 0.0;
+            setColorThemesTopRow(int(frac * m_ctMaxTop + 0.5));
+            return;
+        }
         if (m_dragging && (e->buttons() & Qt::LeftButton)) {
             move(e->globalPosition().toPoint() - m_dragOrigin);
         }
@@ -278,6 +602,7 @@ protected:
     }
     void mouseReleaseEvent(QMouseEvent *e) override {
         m_dragging = false;
+        m_ctDragging = false;
         m_sliderAction.clear();
         WasabiQt::SkinView::mouseReleaseEvent(e);
     }
@@ -299,7 +624,74 @@ protected:
         if (e->key() == Qt::Key_MediaPlay)  { m_host->play();  return; }
         if (e->key() == Qt::Key_MediaPause) { m_host->pause(); return; }
         if (e->key() == Qt::Key_MediaStop)  { m_host->stop();  return; }
+        // Up/Down arrows scroll the colour-themes list when its
+        // tab is open.  Works regardless of wheel-event delivery
+        // (frameless + translucent backgrounds sometimes swallow
+        // wheel events on Wayland).
+        if (e->key() == Qt::Key_Down) {
+            setColorThemesTopRow(colorThemesTopRow() + 1);
+            return;
+        }
+        if (e->key() == Qt::Key_Up) {
+            setColorThemesTopRow(qMax(0, colorThemesTopRow() - 1));
+            return;
+        }
+        if (e->key() == Qt::Key_PageDown) {
+            setColorThemesTopRow(colorThemesTopRow() + 5);
+            return;
+        }
+        if (e->key() == Qt::Key_PageUp) {
+            setColorThemesTopRow(qMax(0, colorThemesTopRow() - 5));
+            return;
+        }
         WasabiQt::SkinView::keyPressEvent(e);
+    }
+    void wheelEvent(QWheelEvent *e) override {
+        // Wheel scroll inside the colour-themes list moves the
+        // top-row offset.  Outside the list area, fall through.
+        const QPoint p = e->position().toPoint();
+        const QRect lr = colorThemesListRect();
+        fprintf(stderr, "[wheel] at (%d,%d) ct_rect=%dx%d+%d+%d valid=%d "
+                "contains=%d delta=%d\n",
+                p.x(), p.y(),
+                lr.width(), lr.height(), lr.x(), lr.y(),
+                lr.isValid()?1:0, lr.contains(p)?1:0,
+                e->angleDelta().y());
+        fflush(stderr);
+        if (lr.isValid() && lr.contains(p)) {
+            const int steps = e->angleDelta().y() / 120;  // 1 notch = 120
+            setColorThemesTopRow(qMax(0,
+                colorThemesTopRow() - steps));
+            return;
+        }
+        WasabiQt::SkinView::wheelEvent(e);
+    }
+
+public:
+    // Reload the modern skin at runtime — re-parses the document,
+    // re-expands the layout, replays the static well-known-scripts
+    // and re-renders.  Mirrors the live-skin-swap path that the
+    // upstream winamp-linux PreferencesDialog drives through its
+    // `skinChanged(path)` signal.
+    void reloadSkin(const QString &skinXmlPath) {
+        WasabiQt::SkinXml::Document doc;
+        QString err;
+        if (!WasabiQt::SkinXml::parse(skinXmlPath, doc, &err)) {
+            QMessageBox::warning(this, tr("Skin load failed"),
+                tr("Could not parse %1:\n%2").arg(skinXmlPath, err));
+            return;
+        }
+        if (!load(doc, "main", "normal", &err)) {
+            QMessageBox::warning(this, tr("Skin load failed"),
+                tr("Layout expand failed: %1").arg(err));
+            return;
+        }
+        auto &mutableTree = const_cast<WasabiQt::Layout::ResolvedWidget &>(
+            tree());
+        WasabiQt::Layout::runKnownScripts(mutableTree,
+                                          layoutNativeSize().width());
+        rebuildWindowRegion();
+        update();
     }
 
 private:
@@ -308,80 +700,168 @@ private:
     // author: 3nd3r <lord3nd3r@gmail.com>); items that don't yet
     // have a backend in qtamp (preferences dialog, equalizer
     // window, playlist window, video, media library, milkdrop,
-    // recent files, bookmarks) are intentionally elided or left
-    // disabled — they'll wire up later as those subsystems land.
-    // Items that map onto qtamp's host surface (transport,
-    // jump-to-time, exit, theme) are fully functional.
+    // recent files, bookmarks) are intentionally left as enabled
+    // placeholders that surface a status — they wire up later as
+    // those subsystems land.  Items that do map onto qtamp's
+    // host surface (transport, jump-to-time, exit) are fully
+    // functional.
+    // Ported verbatim from lord3nd3r/winamp-linux's
+    // WinampWindow::showContextMenu (originally written by 3nd3r
+    // <lord3nd3r@gmail.com>).  Same submenus, same labels, same
+    // hotkey hints, same green-on-navy stylesheet, same PreferencesDialog
+    // and AboutDialog.  Items that map onto qtamp's host surface
+    // (Play file, Recent files, Bookmarks, Preferences, Jump to time,
+    // About, Exit, Colour Theme) are fully wired; the remainder are
+    // present so the menu tree is identical to upstream and they
+    // light up as those subsystems land.
     void showContextMenu(QPoint globalPos) {
         static const char *menuStyle =
-            "QMenu { background-color: #2b2d3d; color: #00ff00; "
-                    "border: 1px solid #555; font-size: 9pt; }"
+            "QMenu { background-color: #2b2d3d; color: #00ff00; border: 1px solid #555; font-size: 9pt; }"
             "QMenu::item:selected { background-color: #0000c6; }"
             "QMenu::item:checked { font-weight: bold; }"
             "QMenu::item:disabled { color: #666; }"
-            "QMenu::separator { height: 1px; background: #555; "
-                              "margin: 2px 4px; }";
+            "QMenu::separator { height: 1px; background: #555; margin: 2px 4px; }";
 
         QMenu menu;
         menu.setStyleSheet(menuStyle);
 
+        // === Winamp main menu (matching Windows main.cpp top_menu) ===
+
         // -- Play submenu --
-        QMenu *playMenu = menu.addMenu(tr("Play"));
+        QMenu *playMenu = menu.addMenu("Play");
         playMenu->setStyleSheet(menuStyle);
-        QAction *playFileAct = playMenu->addAction(tr("Play file...\tL"));
-        QAction *playLocAct  = playMenu->addAction(tr("Play location...\tCtrl+L"));
-        playLocAct->setEnabled(false);  // no URL pick UI yet
+        QAction *playFileAct = playMenu->addAction("Play file...\tL");
+        QAction *playLocAct  = playMenu->addAction("Play location...\tCtrl+L");
+        playMenu->addSeparator();
 
-        menu.addSeparator();
+        // -- Recent files submenu --
+        QMenu *recentMenu = playMenu->addMenu("Recent files");
+        recentMenu->setStyleSheet(menuStyle);
+        auto &recent = RecentFilesManager::instance();
+        QHash<QAction *, QString> recentOf;
+        if (recent.recentFiles.isEmpty()) {
+            QAction *empty = recentMenu->addAction("(no recent files)");
+            empty->setEnabled(false);
+        } else {
+            for (int i = 0; i < recent.recentFiles.size(); i++) {
+                const QString f = recent.recentFiles[i];
+                QAction *a = recentMenu->addAction(
+                    QString("%1. %2").arg(i + 1).arg(QFileInfo(f).fileName()));
+                recentOf.insert(a, f);
+            }
+        }
 
-        // -- Options submenu --
-        QMenu *optMenu = menu.addMenu(tr("Options"));
-        optMenu->setStyleSheet(menuStyle);
-        QAction *aotAct = optMenu->addAction(tr("Always on top\tCtrl+T"));
-        aotAct->setCheckable(true);
-        aotAct->setChecked(windowFlags() & Qt::WindowStaysOnTopHint);
-
-        // -- Playback submenu --
-        QMenu *pbMenu = menu.addMenu(tr("Playback"));
-        pbMenu->setStyleSheet(menuStyle);
-        QAction *jumpTimeAct = pbMenu->addAction(tr("Jump to time...\tJ"));
-        jumpTimeAct->setEnabled(m_host->durationMs() > 0);
-
-        QMenu *repMenu = pbMenu->addMenu(tr("Repeat"));
-        repMenu->setStyleSheet(menuStyle);
-        QAction *repOffAct = repMenu->addAction(tr("Off"));
-        repOffAct->setCheckable(true);
-        repOffAct->setChecked(true);    // single-track playback only
-        QAction *repAllAct = repMenu->addAction(tr("Repeat all"));
-        repAllAct->setCheckable(true);
-        repAllAct->setEnabled(false);
-        QAction *repOneAct = repMenu->addAction(tr("Repeat track"));
-        repOneAct->setCheckable(true);
-        repOneAct->setEnabled(false);
-
-        // -- Colour Theme submenu --
-        QMenu *themeMenu = menu.addMenu(tr("Colour Theme"));
-        themeMenu->setStyleSheet(menuStyle);
-        QStringList themeNames = gammasets().names();
-        std::sort(themeNames.begin(), themeNames.end(),
-                  [](const QString &a, const QString &b){
-                      return a.compare(b, Qt::CaseInsensitive) < 0;
-                  });
-        const auto *act = gammasets().active();
-        const QString activeName = act ? act->name : QString();
-        QHash<QAction *, QString> themeOf;
-        for (const QString &n : themeNames) {
-            QAction *a = themeMenu->addAction(n);
-            a->setCheckable(true);
-            a->setChecked(n == activeName);
-            themeOf.insert(a, n);
+        // -- Bookmarks submenu --
+        QMenu *bmMenu = menu.addMenu("Bookmarks");
+        bmMenu->setStyleSheet(menuStyle);
+        QAction *addBmAct = bmMenu->addAction("Add current as bookmark");
+        const QUrl currentSrc = m_host->player().source();
+        const QString currentFile = currentSrc.isLocalFile()
+            ? currentSrc.toLocalFile() : QString();
+        addBmAct->setEnabled(!currentFile.isEmpty());
+        bmMenu->addSeparator();
+        auto &bmMgr = BookmarkManager::instance();
+        QHash<QAction *, int> bmOf;
+        for (int i = 0; i < bmMgr.bookmarks.size(); i++) {
+            QAction *a = bmMenu->addAction(bmMgr.bookmarks[i].title);
+            bmOf.insert(a, i);
+        }
+        if (bmMgr.bookmarks.isEmpty()) {
+            QAction *empty = bmMenu->addAction("(no bookmarks)");
+            empty->setEnabled(false);
         }
 
         menu.addSeparator();
 
-        QAction *aboutAct = menu.addAction(tr("About qtamp..."));
+        // -- Options submenu --
+        QMenu *optMenu = menu.addMenu("Options");
+        optMenu->setStyleSheet(menuStyle);
+        QAction *aotAct = optMenu->addAction("Always on top\tCtrl+T");
+        aotAct->setCheckable(true);
+        aotAct->setChecked(windowFlags() & Qt::WindowStaysOnTopHint);
+
+        QAction *dsizeAct = optMenu->addAction("Double size\tCtrl+D");
+        dsizeAct->setCheckable(true);
+        dsizeAct->setEnabled(false);
+
+        QAction *shadeAct = optMenu->addAction("Windowshade mode\tCtrl+W");
+        shadeAct->setCheckable(true);
+        shadeAct->setEnabled(false);
+
+        optMenu->addSeparator();
+        QAction *prefsAct = optMenu->addAction("Preferences...\tCtrl+P");
+
+        optMenu->addSeparator();
+        QAction *stopAfterAct = optMenu->addAction("Stop after current");
+        stopAfterAct->setCheckable(true);
+        stopAfterAct->setEnabled(false);
+
+        // -- Playback submenu --
+        QMenu *pbMenu = menu.addMenu("Playback");
+        pbMenu->setStyleSheet(menuStyle);
+        QAction *jumpTimeAct = pbMenu->addAction("Jump to time...\tJ");
+        QAction *jumpFileAct = pbMenu->addAction("Jump to file...\tCtrl+J");
+        jumpFileAct->setEnabled(false);
+        pbMenu->addSeparator();
+
+        QAction *shuffAct = pbMenu->addAction("Shuffle");
+        shuffAct->setCheckable(true);
+        shuffAct->setEnabled(false);
+
+        QMenu *repMenu = pbMenu->addMenu("Repeat");
+        repMenu->setStyleSheet(menuStyle);
+        QAction *repOffAct = repMenu->addAction("Off");
+        repOffAct->setCheckable(true);
+        repOffAct->setChecked(true);
+        QAction *repAllAct = repMenu->addAction("Repeat all");
+        repAllAct->setCheckable(true);
+        repAllAct->setEnabled(false);
+        QAction *repOneAct = repMenu->addAction("Repeat track");
+        repOneAct->setCheckable(true);
+        repOneAct->setEnabled(false);
+
+        // -- Windows submenu --
+        QMenu *winMenu = menu.addMenu("Windows");
+        winMenu->setStyleSheet(menuStyle);
+        QAction *eqTogAct = winMenu->addAction("Equalizer\tAlt+G");
+        eqTogAct->setCheckable(true);
+        eqTogAct->setEnabled(false);
+        QAction *plTogAct = winMenu->addAction("Playlist editor\tAlt+E");
+        plTogAct->setCheckable(true);
+        plTogAct->setEnabled(false);
+        QAction *vidTogAct = winMenu->addAction("Video window");
+        vidTogAct->setCheckable(true);
+        vidTogAct->setEnabled(false);
+        QAction *mlTogAct = winMenu->addAction("Media library\tAlt+L");
+        mlTogAct->setCheckable(true);
+        mlTogAct->setEnabled(false);
+        winMenu->addSeparator();
+        QAction *milkdropAct = winMenu->addAction("Milkdrop visualization");
+        milkdropAct->setEnabled(false);
+
+        // -- Visualization submenu --
+        QMenu *visMenu = menu.addMenu("Visualization");
+        visMenu->setStyleSheet(menuStyle);
+        QAction *visOffAct = visMenu->addAction("Off");
+        visOffAct->setCheckable(true);
+        QAction *visSpecAct = visMenu->addAction("Spectrum analyzer");
+        visSpecAct->setCheckable(true);
+        visSpecAct->setChecked(true);
+        QAction *visOscAct = visMenu->addAction("Oscilloscope");
+        visOscAct->setCheckable(true);
+        visOscAct->setEnabled(false);
+        QAction *visVuAct = visMenu->addAction("VU meter");
+        visVuAct->setCheckable(true);
+        visVuAct->setEnabled(false);
+        visMenu->addSeparator();
+        QAction *visMilkdropAct = visMenu->addAction("Milkdrop visualization...");
+        visMilkdropAct->setEnabled(false);
+
         menu.addSeparator();
-        QAction *quitAct  = menu.addAction(tr("Exit"));
+
+        QAction *aboutAct = menu.addAction("About Winamp...");
+        menu.addSeparator();
+        QAction *quitAct = menu.addAction("Exit");
 
         // === Handle selection ===
         QAction *sel = menu.exec(globalPos);
@@ -392,21 +872,63 @@ private:
             if (!u.isEmpty()) {
                 m_host->player().setSource(u);
                 m_host->player().play();
+                RecentFilesManager::instance().addFile(u.toLocalFile());
             }
         }
+        else if (sel == playLocAct) {
+            PlayLocationDialog dlg(this);
+            if (dlg.exec() == QDialog::Accepted) {
+                QString url = dlg.getUrl();
+                if (!url.isEmpty()) {
+                    m_host->player().setSource(QUrl(url));
+                    m_host->player().play();
+                }
+            }
+        }
+        else if (recentOf.contains(sel)) {
+            const QString f = recentOf.value(sel);
+            m_host->player().setSource(QUrl::fromLocalFile(f));
+            m_host->player().play();
+        }
+        else if (sel == addBmAct) {
+            bool ok;
+            const QString title = QInputDialog::getText(this,
+                tr("Add Bookmark"), tr("Bookmark title:"),
+                QLineEdit::Normal, QFileInfo(currentFile).fileName(), &ok);
+            if (ok && !title.isEmpty())
+                BookmarkManager::instance().addBookmark(title, currentFile);
+        }
+        else if (bmOf.contains(sel)) {
+            const auto &bm = bmMgr.bookmarks[bmOf.value(sel)];
+            m_host->player().setSource(QUrl::fromLocalFile(bm.path));
+            m_host->player().play();
+        }
         else if (sel == aotAct) {
-            const bool on = sel->isChecked();
             Qt::WindowFlags f = windowFlags();
-            if (on) f |=  Qt::WindowStaysOnTopHint;
-            else    f &= ~Qt::WindowStaysOnTopHint;
+            if (sel->isChecked()) f |=  Qt::WindowStaysOnTopHint;
+            else                  f &= ~Qt::WindowStaysOnTopHint;
             setWindowFlags(f);
             show();
+        }
+        else if (sel == prefsAct) {
+            auto *prefs = new PreferencesDialog(this);
+            connect(prefs, &PreferencesDialog::skinChanged,
+                    this, [this](const QString &path){
+                // qtamp only supports modern skins; trigger reload
+                // when the picked path is a Modern-skin folder.
+                const QString xml = path + "/skin.xml";
+                if (QFile::exists(xml)) reloadSkin(xml);
+                else QMessageBox::information(this, tr("Skin"),
+                    tr("Classic skins are not supported in qtamp yet."));
+            });
+            prefs->setAttribute(Qt::WA_DeleteOnClose);
+            prefs->exec();
         }
         else if (sel == jumpTimeAct) {
             bool ok;
             QString timeStr = QInputDialog::getText(this,
-                tr("Jump to Time"),
-                tr("Enter time (MM:SS or seconds):"),
+                "Jump to Time",
+                "Enter time (MM:SS or seconds):",
                 QLineEdit::Normal, "", &ok);
             if (ok && !timeStr.isEmpty()) {
                 qint64 jumpMs = 0;
@@ -421,15 +943,15 @@ private:
             }
         }
         else if (sel == aboutAct) {
-            QMessageBox::about(this, tr("About qtamp"),
-                tr("qtamp — a Qt-native Wasabi/Modern-skin player.\n\n"
-                   "Built on the qtWasabi skin engine + the original "
-                   "Winamp Maki VM."));
+            // The animated demoscene-style AboutDialog from the
+            // upstream dialogs.cpp — same look as winamp-linux.
+            QString skinPath;
+            const QUrl src = m_host->player().source();
+            if (src.isLocalFile()) skinPath = QFileInfo(src.toLocalFile()).absolutePath();
+            AboutDialog about(skinPath, this);
+            about.exec();
         }
         else if (sel == quitAct) close();
-        else if (themeOf.contains(sel)) {
-            setActiveGammaset(themeOf.value(sel));
-        }
     }
 
     void applySliderDrag(int xInWindow) {
@@ -440,11 +962,68 @@ private:
                                    qBound(0.0, v, 1.0));
     }
 
+public:
+    // Programmatic equivalent of clicking a drawer tab.
+    void mousePressEventForTab(int tab) {
+        switchDrawerTab(tab);
+        update();
+    }
+
+private:
+    // Mirror configtabs.m::setTabs(int): show the .on variant of
+    // the selected tab + its content page, hide the others.  Only
+    // touches `visible` attrs inside the drawer — the drawer's own
+    // sysregion-bearing widgets are untouched, so the window
+    // region clip stays in sync without needing a rebuild.
+    void switchDrawerTab(int tab) {
+        struct Apply {
+            const char *id;
+            const char *onIfThisTab;
+        };
+        const QString onEQ   = (tab == 1) ? QStringLiteral("1") : QStringLiteral("0");
+        const QString offEQ  = (tab == 1) ? QStringLiteral("0") : QStringLiteral("1");
+        const QString onOPT  = (tab == 2) ? QStringLiteral("1") : QStringLiteral("0");
+        const QString offOPT = (tab == 2) ? QStringLiteral("0") : QStringLiteral("1");
+        const QString onCT   = (tab == 3) ? QStringLiteral("1") : QStringLiteral("0");
+        const QString offCT  = (tab == 3) ? QStringLiteral("0") : QStringLiteral("1");
+        auto &mut = const_cast<WasabiQt::Layout::ResolvedWidget &>(tree());
+        std::function<void(WasabiQt::Layout::ResolvedWidget &)> walk =
+            [&](WasabiQt::Layout::ResolvedWidget &w) {
+            // Tab on/off variants.
+            if (w.id == QStringLiteral("config.tab.eq.on"))           w.attrs.insert("visible", onEQ);
+            else if (w.id == QStringLiteral("config.tab.eq.off"))     w.attrs.insert("visible", offEQ);
+            else if (w.id == QStringLiteral("config.tab.options.on")) w.attrs.insert("visible", onOPT);
+            else if (w.id == QStringLiteral("config.tab.options.off"))w.attrs.insert("visible", offOPT);
+            else if (w.id == QStringLiteral("config.tab.colorthemes.on"))   w.attrs.insert("visible", onCT);
+            else if (w.id == QStringLiteral("config.tab.colorthemes.off")) w.attrs.insert("visible", offCT);
+            // Content pages.
+            else if (w.id == QStringLiteral("player.normal.drawer.eq"))           w.attrs.insert("visible", onEQ);
+            else if (w.id == QStringLiteral("player.normal.drawer.options"))      w.attrs.insert("visible", onOPT);
+            else if (w.id == QStringLiteral("player.normal.drawer.colorthemes"))  w.attrs.insert("visible", onCT);
+            for (auto &c : w.children) walk(c);
+        };
+        walk(mut);
+    }
+
     QtampHost *m_host = nullptr;
     QPoint     m_dragOrigin;
     bool       m_dragging = false;
     QString    m_sliderAction;     // empty when not dragging a slider
     QRect      m_sliderTrack;
+    // Colour-themes list state — app-level, threaded through
+    // qtWasabi's TreePainter on each paint.  qtWasabi itself stays
+    // a pure rendering engine (no application state) so the
+    // selection/scroll/bbox knowledge lives here.
+    int          m_ctSelectedRow = -1;   // -1 = use active gammaset
+    mutable int  m_ctTopRow      = 0;
+    mutable QRect m_ctListRect;
+    // Scrollbar drag state for the colour-themes list.
+    bool m_ctDragging  = false;
+    int  m_ctDragOffset = 0;
+    int  m_ctTrackTop  = 0;
+    int  m_ctTrackBot  = 0;
+    int  m_ctThumbH    = 31;
+    int  m_ctMaxTop    = 0;
 };
 
 // ── QtampHost methods that need QtampPlayerWindow to be defined ──
@@ -466,6 +1045,10 @@ inline bool QtampHost::minimize() {
     if (m_window) m_window->showMinimized();
     return m_window != nullptr;
 }
+
+// Q_OBJECT classes defined inline need their MOC output included
+// at the bottom of the same TU so AUTOMOC can pick them up.
+#include "main.moc"
 #endif
 
 namespace {
@@ -571,15 +1154,25 @@ int main(int argc, char *argv[]) {
         if (!::getenv("WASABIQT_NO_STATIC_SCRIPTS")) {
             const int layoutW = view->layoutNativeSize().width();
             WasabiQt::Layout::runKnownScripts(mutableTree, layoutW);
+            // The static path mutates widget positions (drawer y,
+            // titlebar streaks, …); recompute the window region so
+            // sysregion cutouts land where the chrome actually
+            // paints, not where the original XML put it.
+            view->rebuildWindowRegion();
         }
 
         // Fire the actual Maki scripts.  Errors are non-fatal — if
         // a binding is missing the runtime logs a guru and moves
         // on; the static-fallback chrome is still visible.
-        static WasabiQt::SkinRuntime runtime;
-        runtime.loadScripts(doc, mutableTree);
-        runtime.dispatchOnScriptLoaded();
-        runtime.dispatchXuiParams(mutableTree);
+        // Set WASABIQT_NO_RUNTIME=1 to skip Maki dispatch entirely
+        // (useful for visual diffs that should reflect ONLY the
+        // static well-known-script path).
+        if (!::getenv("WASABIQT_NO_RUNTIME")) {
+            static WasabiQt::SkinRuntime runtime;
+            runtime.loadScripts(doc, mutableTree);
+            runtime.dispatchOnScriptLoaded();
+            runtime.dispatchXuiParams(mutableTree);
+        }
         view->update();
     }
 
@@ -627,7 +1220,16 @@ int main(int argc, char *argv[]) {
     // grab the widget, save PNG, exit.  Use a 0-ms timer + a small
     // delay so AUTOMOC and the initial repaint complete first.
     if (!screenshotPath.isEmpty()) {
-      QTimer::singleShot(150, view, [view, screenshotPath]() {
+      // Debug knob: WASABIQT_FORCE_TAB=2|3 pre-selects the
+      // Options / Color Themes tab before the screenshot so the
+      // visual harness can verify their content without a click.
+      if (const char *t = ::getenv("WASABIQT_FORCE_TAB")) {
+        const int tn = QByteArray(t).toInt();
+        if (tn >= 1 && tn <= 3)
+            QTimer::singleShot(0, view,
+              [view, tn]() { view->mousePressEventForTab(tn); });
+      }
+      QTimer::singleShot(250, view, [view, screenshotPath]() {
         QPixmap shot = view->grab();
         if (shot.save(screenshotPath)) {
           qInfo() << "qtamp: wrote" << screenshotPath
