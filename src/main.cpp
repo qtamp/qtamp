@@ -1399,6 +1399,12 @@ int main(int argc, char *argv[]) {
                 if (w.id == QStringLiteral("drawer.button.open"))
                     w.attrs.insert(QStringLiteral("visible"),
                                    QStringLiteral("0"));
+                // Classic-skin position-bar background (setposbar
+                // visibility.maki normally toggles this on play);
+                // keep it visible so the rail is actually drawn.
+                else if (w.id == QStringLiteral("posbarbg"))
+                    w.attrs.insert(QStringLiteral("visible"),
+                                   QStringLiteral("1"));
                 for (auto &c : w.children) walk(c);
             };
             walk(mutableTree);
