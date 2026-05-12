@@ -343,6 +343,46 @@ private:
 // in QtampHost; this class is just window shell + input routing.
 class QtampPlayerWindow : public WasabiQt::SkinView {
 public:
+    // Keep the parsed skin Document around so we can spin off
+    // secondary windows (EQ / Playlist) that load other containers
+    // from the same skin on demand.
+    void setSkinDocument(WasabiQt::SkinXml::Document doc) {
+        m_doc = std::move(doc);
+    }
+
+    // Toggle a secondary container window (EQ / Playlist / etc.).
+    // Creates the SkinView lazily on first call.  Layout id matches
+    // the skin XML convention — modern skins almost always use
+    // "normal" as the default layout name.
+    void toggleSubwindow(const QString &containerId) {
+        WasabiQt::SkinView *&slot = m_subwindows[containerId.toLower()];
+        if (!slot) {
+            slot = new WasabiQt::SkinView();
+            slot->setWindowTitle(
+                "Qtamp — " + QFileInfo(windowTitle().mid(8)).fileName()
+                + " · " + containerId);
+            slot->setWindowFlags(slot->windowFlags() | Qt::FramelessWindowHint);
+            slot->setAttribute(Qt::WA_TranslucentBackground);
+            slot->setHost(m_host);
+            QString err;
+            if (!slot->load(m_doc, containerId, QStringLiteral("normal"),
+                            &err)) {
+                fprintf(stderr,
+                    "[qtamp] failed to open container %s: %s\n",
+                    containerId.toLocal8Bit().constData(),
+                    err.toLocal8Bit().constData());
+                slot->deleteLater();
+                slot = nullptr;
+                return;
+            }
+            slot->resize(slot->layoutNativeSize());
+            slot->show();
+            return;
+        }
+        if (slot->isVisible()) slot->hide();
+        else                   slot->show();
+    }
+
     explicit QtampPlayerWindow(QtampHost *host, QWidget *parent = nullptr)
         : WasabiQt::SkinView(parent), m_host(host) {
         setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
@@ -463,6 +503,23 @@ protected:
                     hit->attrs.value(QStringLiteral("action"));
                 fprintf(stderr, "[qtamp] action: %s\n",
                         action.toUpper().toLocal8Bit().constData());
+                // `action="TOGGLE" param="<container-id>"` opens (or
+                // toggles) a secondary container window from the same
+                // skin doc — EQ, Playlist, etc.
+                if (action.compare(QStringLiteral("TOGGLE"),
+                                   Qt::CaseInsensitive) == 0) {
+                    QString param = hit->attrs.value(
+                        QStringLiteral("param"));
+                    if (!param.isEmpty()) {
+                        // Strip "guid:" / "GUID:" prefix —
+                        // DeClassified writes `param="guid:pl"`.
+                        if (param.startsWith(QStringLiteral("guid:"),
+                                             Qt::CaseInsensitive))
+                            param = param.mid(5);
+                        toggleSubwindow(param);
+                        return;
+                    }
+                }
                 if (WasabiQt::dispatchAction(action, m_host, this))
                     return;
             }
@@ -733,6 +790,10 @@ public:
                 tr("Layout expand failed: %1").arg(err));
             return;
         }
+        setSkinDocument(doc);
+        // Any previously-open subwindows belong to the old skin doc.
+        for (auto *w : std::as_const(m_subwindows)) if (w) w->deleteLater();
+        m_subwindows.clear();
         auto &mutableTree = const_cast<WasabiQt::Layout::ResolvedWidget &>(
             tree());
         WasabiQt::Layout::runKnownScripts(mutableTree,
@@ -1140,6 +1201,8 @@ public:
     bool       m_dragging = false;
     QString    m_sliderAction;     // empty when not dragging a slider
     QRect      m_sliderTrack;
+    WasabiQt::SkinXml::Document m_doc;
+    QHash<QString, WasabiQt::SkinView *> m_subwindows;
     bool m_drawerOpen = true;
     // Visualisation mode (right-click → Visualization submenu).
     // 0=Off, 1=Spectrum (default), 2=Oscilloscope, 3=VU meter.
@@ -1298,6 +1361,7 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "qtamp: layout load failed: %s\n", err.toLocal8Bit().constData());
       return 4;
     }
+    view->setSkinDocument(doc);
 
     // Drive the chrome.  Two paths:
     //  1) Apply the static well-known-script equivalents
