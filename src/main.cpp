@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIcon>
+#include <QProcess>
 #include <QSettings>
 #include <QSplashScreen>
 #include <QSurfaceFormat>
@@ -367,6 +368,13 @@ public:
                 this, [this](QMediaPlayer::PlaybackState) { update(); });
     }
 
+    // ── Visualisation mode (app-level) ────────────────────────
+    int  visMode() const { return m_visMode; }
+    void setVisMode(int m) {
+        m_visMode = m;
+        update();
+    }
+
     // ── Colour-themes list state (app-level) ──────────────────
     int     colorThemesSelectedRow() const { return m_ctSelectedRow; }
     void    setColorThemesSelectedRow(int row) {
@@ -397,7 +405,7 @@ protected:
                 &bp, tree(), registry(), fonts(),
                 size(), host(), &gammasets(), &colors(),
                 m_ctSelectedRow, m_ctTopRow,
-                &m_ctListRect, &m_ctTopRow);
+                &m_ctListRect, &m_ctTopRow, m_visMode);
         }
         QPainter p(this);
         p.setClipping(false);
@@ -417,6 +425,23 @@ protected:
         }
         if (e->button() == Qt::LeftButton) {
             const QPoint p = e->position().toPoint();
+
+            // Drawer toggle — handled before the regular hit-test
+            // because player.main paints (and hit-tests) on top of
+            // the drawer toggle button when the drawer is closed.
+            // The button lives at drawer-relative (-72, 118); drawer
+            // y flips between 17 (closed) and 133 (open).
+            {
+                const int btnX = layoutNativeSize().width() - 72;
+                const int btnY = m_drawerOpen ? 251 : 135;
+                const QRect toggle =
+                    QRect(btnX, btnY, 25, 7).adjusted(-3, -3, 3, 3);
+                if (toggle.contains(p)) {
+                    setDrawerOpen(!m_drawerOpen);
+                    return;
+                }
+            }
+
             QRect hitBbox;
             const auto *hit = WasabiQt::Layout::hitTest(
                 tree(), p, /*actionOnly=*/true,
@@ -549,21 +574,43 @@ protected:
                     return;
                 }
             }
-            // Switch button under Color Themes tab — apply the
-            // selected gammaset.  XML wires it as
-            // action="colorthemes_switch".
-            if (hit2 && hit2->attrs.value(QStringLiteral("action"))
-                    .compare(QStringLiteral("colorthemes_switch"),
-                             Qt::CaseInsensitive) == 0) {
+            // Colour-themes drawer actions — qtamp-specific
+            // (Audacious and other Wasabi 2-style hosts simply
+            // wouldn't bind handlers for these).  Three buttons
+            // ship in the skin XML as:
+            //   action="colorthemes_switch"  - apply selected
+            //   action="colorthemes_previous" - select prev row
+            //   action="colorthemes_next"     - select next row
+            if (hit2) {
+                const QString a = hit2->attrs.value(QStringLiteral("action")).toLower();
                 QStringList names = gammasets().names();
                 std::sort(names.begin(), names.end(),
-                          [](const QString &a, const QString &b){
-                              return a.compare(b, Qt::CaseInsensitive) < 0;
+                          [](const QString &x, const QString &y){
+                              return x.compare(y, Qt::CaseInsensitive) < 0;
                           });
-                const int row = colorThemesSelectedRow();
-                if (row >= 0 && row < names.size())
-                    setActiveGammaset(names[row]);
-                return;
+                int row = colorThemesSelectedRow();
+                if (row < 0 || row >= names.size()) {
+                    // Resolve "no explicit selection" to the active
+                    // gammaset's row so prev/next have something to
+                    // start from.
+                    const auto *act = gammasets().active();
+                    const QString actName = act ? act->name : QString();
+                    row = qMax(0, names.indexOf(actName));
+                }
+                if (a == QLatin1String("colorthemes_switch")) {
+                    if (row >= 0 && row < names.size())
+                        setActiveGammaset(names[row]);
+                    return;
+                }
+                if (a == QLatin1String("colorthemes_previous")) {
+                    setColorThemesSelectedRow(qMax(0, row - 1));
+                    return;
+                }
+                if (a == QLatin1String("colorthemes_next")) {
+                    setColorThemesSelectedRow(
+                        qMin(names.size() - 1, row + 1));
+                    return;
+                }
             }
             // Empty-area click — start a window drag.
             if (windowHandle() && windowHandle()->startSystemMove())
@@ -690,8 +737,13 @@ public:
             tree());
         WasabiQt::Layout::runKnownScripts(mutableTree,
                                           layoutNativeSize().width());
-        rebuildWindowRegion();
-        update();
+        // Re-apply our drawer state — the fresh tree has both
+        // drawer.button.close and drawer.button.open visible by
+        // default, so without this the down-arrow paints on top of
+        // the up-arrow even though the drawer is open.
+        const bool want = m_drawerOpen;
+        m_drawerOpen = !want;
+        setDrawerOpen(want);
     }
 
 private:
@@ -844,15 +896,16 @@ private:
         visMenu->setStyleSheet(menuStyle);
         QAction *visOffAct = visMenu->addAction("Off");
         visOffAct->setCheckable(true);
+        visOffAct->setChecked(m_visMode == 0);
         QAction *visSpecAct = visMenu->addAction("Spectrum analyzer");
         visSpecAct->setCheckable(true);
-        visSpecAct->setChecked(true);
+        visSpecAct->setChecked(m_visMode == 1);
         QAction *visOscAct = visMenu->addAction("Oscilloscope");
         visOscAct->setCheckable(true);
-        visOscAct->setEnabled(false);
+        visOscAct->setChecked(m_visMode == 2);
         QAction *visVuAct = visMenu->addAction("VU meter");
         visVuAct->setCheckable(true);
-        visVuAct->setEnabled(false);
+        visVuAct->setChecked(m_visMode == 3);
         visMenu->addSeparator();
         QAction *visMilkdropAct = visMenu->addAction("Milkdrop visualization...");
         visMilkdropAct->setEnabled(false);
@@ -914,12 +967,21 @@ private:
             auto *prefs = new PreferencesDialog(this);
             connect(prefs, &PreferencesDialog::skinChanged,
                     this, [this](const QString &path){
-                // qtamp only supports modern skins; trigger reload
-                // when the picked path is a Modern-skin folder.
-                const QString xml = path + "/skin.xml";
-                if (QFile::exists(xml)) reloadSkin(xml);
-                else QMessageBox::information(this, tr("Skin"),
-                    tr("Classic skins are not supported in qtamp yet."));
+                // Persist the picked skin.  Modern skins reload in
+                // place via qtWasabi; classic skins require a renderer
+                // swap (this window is qtWasabi-only), so we restart
+                // the process — main() routes by skin type at boot.
+                QSettings s(configPath(), QSettings::IniFormat);
+                s.setValue("skin", path);
+                s.sync();
+                if (isModernSkinDir(path)) {
+                    const QString xml = path + "/skin.xml";
+                    if (QFile::exists(xml)) reloadSkin(xml);
+                } else {
+                    QProcess::startDetached(
+                        QApplication::applicationFilePath(), {});
+                    QApplication::quit();
+                }
             });
             prefs->setAttribute(Qt::WA_DeleteOnClose);
             prefs->exec();
@@ -951,6 +1013,10 @@ private:
             AboutDialog about(skinPath, this);
             about.exec();
         }
+        else if (sel == visOffAct)  setVisMode(0);
+        else if (sel == visSpecAct) setVisMode(1);
+        else if (sel == visOscAct)  setVisMode(2);
+        else if (sel == visVuAct)   setVisMode(3);
         else if (sel == quitAct) close();
     }
 
@@ -969,12 +1035,76 @@ public:
         update();
     }
 
-private:
     // Mirror configtabs.m::setTabs(int): show the .on variant of
     // the selected tab + its content page, hide the others.  Only
     // touches `visible` attrs inside the drawer — the drawer's own
     // sysregion-bearing widgets are untouched, so the window
     // region clip stays in sync without needing a rebuild.
+    // Mirror configtabs.m's OpenDrawer / closeDrawer.  When closed
+    // the drawer slides up to y=17 so it sits behind player.main
+    // (out of view); the drawer.button.open is then the only
+    // child still visible — it pokes through the player chrome's
+    // CONFIG notch.  When open the drawer sits at y=133 (below
+    // player.main, the position we already use as the default).
+    void setDrawerOpen(bool open) {
+        if (open == m_drawerOpen) return;
+        m_drawerOpen = open;
+        auto &mut = const_cast<WasabiQt::Layout::ResolvedWidget &>(tree());
+        std::function<void(WasabiQt::Layout::ResolvedWidget &)> walk =
+            [&](WasabiQt::Layout::ResolvedWidget &w) {
+            if (w.id == QStringLiteral("player.normal.drawer")) {
+                w.attrs.insert(QStringLiteral("y"),
+                    open ? QStringLiteral("133") : QStringLiteral("17"));
+                w.attrs.remove(QStringLiteral("relaty"));
+            } else if (w.id == QStringLiteral("player.normal.drawer.shadow")) {
+                w.attrs.insert(QStringLiteral("visible"),
+                    open ? QStringLiteral("1") : QStringLiteral("0"));
+                w.attrs.insert(QStringLiteral("y"),
+                    open ? QStringLiteral("121") : QStringLiteral("0"));
+            } else if (w.id == QStringLiteral("player.normal.drawer.content")) {
+                // The chrome/inner-borders/list live inside content;
+                // hide it when closed so only the open-button area
+                // (rendered later in the tree) shows through.
+                w.attrs.insert(QStringLiteral("visible"),
+                    open ? QStringLiteral("1") : QStringLiteral("0"));
+            } else if (w.id == QStringLiteral("drawer.button.close")) {
+                // Single toggle button: always visible, image swapped
+                // to flip the arrow.  When the drawer is open it shows
+                // the up-arrow ("close"); when closed it shows the
+                // down-arrow ("open").
+                w.attrs.insert(QStringLiteral("visible"),
+                    QStringLiteral("1"));
+                w.attrs.insert(QStringLiteral("image"),
+                    open ? QStringLiteral("drawer.button.close")
+                         : QStringLiteral("drawer.button.open"));
+                w.attrs.insert(QStringLiteral("hoverImage"),
+                    open ? QStringLiteral("drawer.button.close.hover")
+                         : QStringLiteral("drawer.button.open.hover"));
+                w.attrs.insert(QStringLiteral("downImage"),
+                    open ? QStringLiteral("drawer.button.close.pressed")
+                         : QStringLiteral("drawer.button.open.pressed"));
+            } else if (w.id == QStringLiteral("drawer.button.open")) {
+                // The duplicate is never used as a separate widget.
+                w.attrs.insert(QStringLiteral("visible"),
+                    QStringLiteral("0"));
+            }
+            for (auto &c : w.children) walk(c);
+        };
+        walk(mut);
+        // Shrink the window when the drawer is closed so the chrome
+        // sits on its own footprint with no transparent strip below.
+        // Compact height covers chrome + the open-button tab that
+        // pokes out at the bottom: drawer.y(=17) + button.relY(=118)
+        // + button.h(~7) + a couple px of padding.
+        const QSize full = layoutNativeSize();
+        const int compactH = 17 + 118 + 7 + 2;  // 144 px
+        setMinimumSize(0, 0);
+        setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+        resize(full.width(), open ? full.height() : compactH);
+        rebuildWindowRegion();
+        update();
+    }
+
     void switchDrawerTab(int tab) {
         struct Apply {
             const char *id;
@@ -1010,6 +1140,10 @@ private:
     bool       m_dragging = false;
     QString    m_sliderAction;     // empty when not dragging a slider
     QRect      m_sliderTrack;
+    bool m_drawerOpen = true;
+    // Visualisation mode (right-click → Visualization submenu).
+    // 0=Off, 1=Spectrum (default), 2=Oscilloscope, 3=VU meter.
+    int  m_visMode    = 1;
     // Colour-themes list state — app-level, threaded through
     // qtWasabi's TreePainter on each paint.  qtWasabi itself stays
     // a pure rendering engine (no application state) so the
@@ -1089,7 +1223,8 @@ bool takeFlag(int &argc, char **argv, const char *flag) {
 }  // namespace
 
 int main(int argc, char *argv[]) {
-  QString modernSkinPath = takeModernSkinArg(argc, argv);
+  QString cliModernSkin  = takeModernSkinArg(argc, argv);
+  QString cliClassicSkin = takeStringArg(argc, argv, "--classic-skin");
   QString screenshotPath = takeScreenshotArg(argc, argv);
   const bool listActions = takeFlag(argc, argv, "--list-actions");
 
@@ -1108,6 +1243,32 @@ int main(int argc, char *argv[]) {
   app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
   app.setOrganizationName("Qtamp");
+
+  // Resolve skin path + renderer kind.  CLI flags win; then saved
+  // setting; then a sensible default.  Modern skins are rendered by
+  // qtWasabi; classic skins by the legacy WinampWindow renderer
+  // ported from lord3nd3r/winamp-linux.
+  QString modernSkinPath;
+  QString classicSkinPath;
+  {
+    QSettings s(configPath(), QSettings::IniFormat);
+    if (!cliModernSkin.isEmpty()) {
+      modernSkinPath = cliModernSkin;
+    } else if (!cliClassicSkin.isEmpty()) {
+      classicSkinPath = cliClassicSkin;
+    } else {
+      const QString saved = s.value("skin").toString();
+      if (!saved.isEmpty()) {
+        if (isModernSkinDir(saved)) modernSkinPath  = saved;
+        else                        classicSkinPath = saved;
+      } else {
+        const QString defModern = QDir::homePath()
+                                  + "/.winamp/skins/Winamp Modern";
+        if (QFile::exists(defModern + "/skin.xml"))
+          modernSkinPath = defModern;
+      }
+    }
+  }
 
 #ifdef WINAMP_HAVE_WASABIQT
   // Modern-skin path — bypass the classic-skin chrome entirely and
@@ -1159,6 +1320,18 @@ int main(int argc, char *argv[]) {
             // sysregion cutouts land where the chrome actually
             // paints, not where the original XML put it.
             view->rebuildWindowRegion();
+            // Drawer opens by default in qtamp.  Configtabs.m's
+            // setup hides drawer.button.open in that state; since
+            // we don't run scripts on first load, do it ourselves
+            // so the two toggle buttons don't overlap on startup.
+            std::function<void(WasabiQt::Layout::ResolvedWidget &)> walk =
+                [&](WasabiQt::Layout::ResolvedWidget &w) {
+                if (w.id == QStringLiteral("drawer.button.open"))
+                    w.attrs.insert(QStringLiteral("visible"),
+                                   QStringLiteral("0"));
+                for (auto &c : w.children) walk(c);
+            };
+            walk(mutableTree);
         }
 
         // Fire the actual Maki scripts.  Errors are non-fatal — if
@@ -1211,6 +1384,10 @@ int main(int argc, char *argv[]) {
       delete view;
       return failed == 0 ? 0 : 6;
     }
+    {
+      QSettings s(configPath(), QSettings::IniFormat);
+      s.setValue("skin", modernSkinPath);
+    }
     view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
     view->resize(view->layoutNativeSize());
     view->show();
@@ -1228,6 +1405,10 @@ int main(int argc, char *argv[]) {
         if (tn >= 1 && tn <= 3)
             QTimer::singleShot(0, view,
               [view, tn]() { view->mousePressEventForTab(tn); });
+      }
+      if (::getenv("WASABIQT_DRAWER_CLOSED")) {
+        QTimer::singleShot(0, view,
+          [view]() { view->setDrawerOpen(false); });
       }
       QTimer::singleShot(250, view, [view, screenshotPath]() {
         QPixmap shot = view->grab();
@@ -1270,7 +1451,13 @@ int main(int argc, char *argv[]) {
   // Load bitmaps — try saved skin, then project skins/default, then resource
   // dir
   QSettings settings(configPath(), QSettings::IniFormat);
-  QString skinPath = settings.value("skin").toString();
+  // CLI --classic-skin overrides the saved one; otherwise fall back
+  // to whatever was last picked (which we already know is classic
+  // because the modern branch above didn't take it).
+  QString skinPath = !classicSkinPath.isEmpty() ? classicSkinPath
+                                                : settings.value("skin").toString();
+  if (!classicSkinPath.isEmpty())
+    settings.setValue("skin", classicSkinPath);
 
   // Load language pack
   QString langCode = settings.value("language", "en").toString();

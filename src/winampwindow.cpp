@@ -18,6 +18,9 @@
 
 #include <QAudioBuffer>
 #include <QAudioFormat>
+#include <QApplication>
+#include <QProcess>
+#include <QWindow>
 #include <cmath>
 #include <cstring>
 
@@ -487,22 +490,19 @@ void WinampWindow::onAddBookmark() {
 }
 
 void WinampWindow::onSkinChanged(const QString &skinPath) {
-    // Check if this is a modern (XML-based) skin
+    // Modern skins (XML/Wasabi) are rendered by qtWasabi in a
+    // separate window class (QtampPlayerWindow).  This classic-chrome
+    // window can't host them, so we persist the choice and relaunch —
+    // main() routes by skin type at boot.
     if (isModernSkinDir(skinPath)) {
-        if (modernSkin.loadSkin(skinPath)) {
-            isModernSkin = true;
-            g_isModernSkin = true;
-            g_modernSkin = &modernSkin;
-            // Remove fixed size constraint, allow resizing
-            setMinimumSize(0, 0);
-            setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
-            setMinimumSize(354, 144);
-            resize(354, 144);
-            setMouseTracking(true);
-            update();
-            qDebug() << "Loaded modern skin:" << modernSkin.getSkinName();
-        }
-    } else {
+        QSettings s(configPath(), QSettings::IniFormat);
+        s.setValue("skin", skinPath);
+        s.sync();
+        QProcess::startDetached(QApplication::applicationFilePath(), {});
+        QApplication::quit();
+        return;
+    }
+    {
         // Classic skin
         isModernSkin = false;
         g_isModernSkin = false;
@@ -2084,7 +2084,11 @@ void WinampWindow::mousePressEvent(QMouseEvent *event) {
             return;
         }
 
-        // Drag window (titlebar or empty area)
+        // Drag window (titlebar or empty area).  Use the compositor's
+        // system-move on Wayland (the X11-style move() doesn't work on
+        // wlroots); fall back to manual tracking if unavailable.
+        if (windowHandle() && windowHandle()->startSystemMove())
+            return;
         isDragging = true;
         dragPosition = MOUSE_GLOBAL_POS(event) - frameGeometry().topLeft();
         return;
@@ -2194,6 +2198,8 @@ void WinampWindow::mousePressEvent(QMouseEvent *event) {
     if (y < 14) {
         if (x >= 264 && x < 273) { close(); return; }           // Close
         if (x >= 244 && x < 253) { showMinimized(); return; }   // Minimize
+        if (windowHandle() && windowHandle()->startSystemMove())
+            return;
         isDragging = true;
         dragPosition = MOUSE_GLOBAL_POS(event) - frameGeometry().topLeft();
         return;

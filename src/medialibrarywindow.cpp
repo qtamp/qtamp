@@ -1,6 +1,7 @@
 #include "medialibrarywindow.h"
 #include "qt5compat.h"
 #include "translator.h"
+#include <QWindow>
 
 MediaLibraryWindow::MediaLibraryWindow(QWidget *parent) : QWidget(parent) {
     setWindowTitle(TR("win.library.title", "Qtamp Library"));
@@ -123,6 +124,8 @@ void MediaLibraryWindow::mousePressEvent(QMouseEvent *event) {
         
         // Check if clicking in titlebar area (draggable)
         if (event->pos().y() < 24) {
+            if (windowHandle() && windowHandle()->startSystemMove())
+                return;
             isDragging = true;
             dragStartPos = event->pos();
         }

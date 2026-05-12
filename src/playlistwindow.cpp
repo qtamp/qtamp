@@ -9,6 +9,7 @@
 #include <random>
 #include <QAbstractItemView>
 #include <QSpinBox>
+#include <QWindow>
 #include <QCheckBox>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -1006,6 +1007,10 @@ void PlaylistWindow::mousePressEvent(QMouseEvent *event) {
                 event->accept();
                 return;
             }
+        }
+        if (windowHandle() && windowHandle()->startSystemMove()) {
+            event->accept();
+            return;
         }
         isDragging = true;
         dragPosition = GLOBAL_POS(event) - frameGeometry().topLeft();

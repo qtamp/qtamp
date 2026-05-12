@@ -1,6 +1,7 @@
 #include "videowindow.h"
 #include "qt5compat.h"
 #include "translator.h"
+#include <QWindow>
 
 VideoWindow::VideoWindow(QWidget *parent) : QWidget(parent) {
     setWindowTitle(TR("win.video.title", "Qtamp Video"));
@@ -99,6 +100,8 @@ void VideoWindow::mousePressEvent(QMouseEvent *event) {
             return;
         }
         // Otherwise, start dragging
+        if (windowHandle() && windowHandle()->startSystemMove())
+            return;
         isDragging = true;
         dragStartPos = GLOBAL_POS(event) - frameGeometry().topLeft();
     } else if (event->button() == Qt::RightButton) {

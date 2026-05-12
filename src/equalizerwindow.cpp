@@ -6,6 +6,7 @@
 #include "eqpresets.h"
 #include "translator.h"
 #include "skinutils.h"
+#include <QWindow>
 
 // Equalizer Window Constructor
 EqualizerWindow::EqualizerWindow(WinampWindow *parent) : QWidget(nullptr), mainWindow(parent) {
@@ -367,6 +368,8 @@ void EqualizerWindow::mousePressEvent(QMouseEvent *event) {
         // Titlebar
         if (y < tbH) {
             if (x >= width() - 18) { hide(); return; }
+            if (windowHandle() && windowHandle()->startSystemMove())
+                return;
             isDragging = true;
             dragPosition = GLOBAL_POS(event) - frameGeometry().topLeft();
             return;
@@ -409,6 +412,8 @@ void EqualizerWindow::mousePressEvent(QMouseEvent *event) {
     // Title bar
     if (y < 14) {
         if (x >= 264) { hide(); return; }
+        if (windowHandle() && windowHandle()->startSystemMove())
+            return;
         isDragging = true;
         dragPosition = GLOBAL_POS(event) - frameGeometry().topLeft();
         return;
