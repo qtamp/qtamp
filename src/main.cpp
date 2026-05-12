@@ -242,6 +242,8 @@ public:
     int     volume() const override {
         return int(qBound(qreal(0), m_audio.volume(), qreal(1)) * 100);
     }
+    int     channelCount() const override { return m_lastChannels; }
+    int     sampleRate()   const override { return m_lastSampleRate; }
     QString songTitle() const override {
         const QUrl src = m_player.source();
         if (src.isLocalFile())
@@ -285,6 +287,8 @@ private:
         const int channels = fmt.channelCount();
         const int total = frames * channels;
         if (total <= 0 || channels <= 0) return;
+        m_lastChannels   = channels;
+        m_lastSampleRate = fmt.sampleRate();
 
         double sumSq = 0.0;
         switch (fmt.sampleFormat()) {
@@ -331,6 +335,8 @@ private:
     QAudioOutput  m_audio;
     QAudioBufferOutput m_bufOut;
     double        m_audioLevel = 0.0;
+    int           m_lastChannels   = 0;
+    int           m_lastSampleRate = 0;
     QtampPlayerWindow *m_window = nullptr;
 };
 
