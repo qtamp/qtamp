@@ -1410,7 +1410,19 @@ int main(int argc, char *argv[]) {
         QTimer::singleShot(0, view,
           [view]() { view->setDrawerOpen(false); });
       }
-      QTimer::singleShot(250, view, [view, screenshotPath]() {
+      // Optional: queue + play a file before the screenshot grab.
+      // Used to verify the chrome at "real" host state (time digits,
+      // kbps/kHz numbers, songticker, vis level) instead of the
+      // bare zero-state default.
+      int screenshotDelayMs = 250;
+      if (const char *f = ::getenv("WASABIQT_PLAY_FILE")) {
+        screenshotDelayMs = 2500;
+        QTimer::singleShot(0, view, [host, f]() {
+          host->player().setSource(QUrl::fromLocalFile(QString::fromLocal8Bit(f)));
+          host->player().play();
+        });
+      }
+      QTimer::singleShot(screenshotDelayMs, view, [view, screenshotPath]() {
         QPixmap shot = view->grab();
         if (shot.save(screenshotPath)) {
           qInfo() << "qtamp: wrote" << screenshotPath
