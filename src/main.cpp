@@ -1432,6 +1432,12 @@ int main(int argc, char *argv[]) {
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
             runtime.dispatchXuiParams(mutableTree);
+            // onResize event firing is wired but Maki's reverse-decl
+            // arg push order vs the handler's POP order is subtle and
+            // current dispatch gives layoutW=652 to the handler that
+            // expects 354 — needs investigation before turning on.
+            // const QSize ls = view->layoutNativeSize();
+            // runtime.dispatchInitialResize(ls.width(), ls.height());
         }
         view->update();
     }
