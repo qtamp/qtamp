@@ -369,7 +369,16 @@ private:
 // works via QWindow::startSystemMove() on Wayland and a manual
 // move() fallback elsewhere.  All transport / display logic lives
 // in QtampHost; this class is just window shell + input routing.
-class QtampPlayerWindow : public WasabiQt::SkinView {
+// Phase 6 migration: QtampPlayerWindow is now a QQuickItem subclass
+// hosted in a QQuickView (frameless transparent QQuickWindow).  All
+// the same input handling / state / paint as before — just on top of
+// the Qt Quick Scene Graph instead of QWidget paint events.  The
+// renderer chain (TreePainter -> QImage -> QSGTexture) lives in
+// SkinQuickItem's updatePaintNode + the paintInto virtual we
+// override here.  Auxiliary sub-windows (EQ / Playlist / etc.) stay
+// on the QWidget SkinView path for now; they migrate in a follow-up
+// once this primary one is stable.
+class QtampPlayerWindow : public WasabiQt::SkinQuickItem {
 public:
     // Keep the parsed skin Document around so we can spin off
     // secondary windows (EQ / Playlist) that load other containers
@@ -386,8 +395,9 @@ public:
         WasabiQt::SkinView *&slot = m_subwindows[containerId.toLower()];
         if (!slot) {
             slot = new WasabiQt::SkinView();
+            const QString hostTitle = window() ? window()->title() : QString();
             slot->setWindowTitle(
-                "Qtamp — " + QFileInfo(windowTitle().mid(8)).fileName()
+                "Qtamp — " + QFileInfo(hostTitle.mid(8)).fileName()
                 + " · " + containerId);
             slot->setWindowFlags(slot->windowFlags() | Qt::FramelessWindowHint);
             slot->setAttribute(Qt::WA_TranslucentBackground);
@@ -411,22 +421,24 @@ public:
         else                   slot->show();
     }
 
-    explicit QtampPlayerWindow(QtampHost *host, QWidget *parent = nullptr)
-        : WasabiQt::SkinView(parent), m_host(host) {
-        setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
-        setAttribute(Qt::WA_TranslucentBackground);
+    explicit QtampPlayerWindow(QtampHost *host, QQuickItem *parent = nullptr)
+        : WasabiQt::SkinQuickItem(parent), m_host(host) {
+        // QQuickItem is hosted by a QQuickView; the view sets
+        // FramelessWindowHint + transparent color itself (main()
+        // creates the view).  No setAttribute/setWindowFlags here —
+        // those are QWidget APIs that don't apply to items.
 
-        // Hand the Host to SkinView — paintEvent pulls live
-        // display strings AND <slider> thumb positions straight
-        // from it.  Supersedes setDisplayResolver().
+        // Hand the Host to SkinQuickItem so paintInto pulls live
+        // display strings AND <slider> thumb positions from it.
         setHost(host);
 
-        // 200ms repaint cadence so the time text ticks visibly
-        // while playback is running.
+        // 200ms repaint cadence so the time text ticks visibly while
+        // playback is running.  QQuickItem::update queues a node
+        // update on the scene graph.
         auto *tick = new QTimer(this);
         tick->setInterval(200);
         connect(tick, &QTimer::timeout, this,
-                qOverload<>(&QWidget::update));
+                qOverload<>(&QQuickItem::update));
         tick->start();
 
         // Immediate repaint when transport state / source changes.
@@ -434,6 +446,12 @@ public:
                 [this](const QUrl &) { update(); });
         connect(&host->player(), &QMediaPlayer::playbackStateChanged,
                 this, [this](QMediaPlayer::PlaybackState) { update(); });
+
+        // Pick up keyboard events (Esc to close, Ctrl-L for open
+        // file, arrow keys for colorthemes scroll).  QQuickItems
+        // don't receive key events by default.
+        setFlag(QQuickItem::ItemIsFocusScope, true);
+        setFlag(QQuickItem::ItemAcceptsInputMethod, true);
     }
 
     // ── Visualisation mode (app-level) ────────────────────────
@@ -457,35 +475,23 @@ public:
     QRect   colorThemesListRect() const { return m_ctListRect; }
 
 protected:
-    // Re-implement SkinView's paint so the app's colour-themes
+    // Override SkinQuickItem's paint hook so the app's colour-themes
     // list state (selectedRow / topRow / out-bbox) threads into
-    // qtWasabi's TreePainter without the engine having to know
-    // about that state.  qtWasabi stays a pure renderer.
-    void paintEvent(QPaintEvent *) override {
-        QImage buf(size(), QImage::Format_ARGB32_Premultiplied);
-        buf.fill(Qt::transparent);
-        {
-            QPainter bp(&buf);
-            if (!windowRegion().isEmpty())
-                bp.setClipRegion(windowRegion());
-            m_ctListRect = QRect();
-            WasabiQt::TreePainter::paintTree(
-                &bp, tree(), registry(), fonts(),
-                size(), host(), &gammasets(), &colors(),
-                m_ctSelectedRow, m_ctTopRow,
-                &m_ctListRect, &m_ctTopRow, m_visMode);
-        }
-        QPainter p(this);
-        p.setClipping(false);
-        p.setCompositionMode(QPainter::CompositionMode_Source);
-        p.drawImage(0, 0, buf);
-        // Feed the painted alpha to SkinView so alphaHitTest sees the
-        // same pixels we just drew — the override bypasses
-        // SkinView::paintEvent's own caching path.
-        setPaintedAlpha(std::move(buf));
+    // qtWasabi's TreePainter without the engine having to know about
+    // that state.  qtWasabi stays a pure renderer; per-skin state is
+    // a property of the qtamp consumer.  Called from updatePaintNode
+    // into a transparent QImage buffer that gets uploaded as a
+    // QSGSimpleTextureNode.
+    void paintInto(QPainter *p, const QSize &canvas) override {
+        if (!windowRegion().isEmpty()) p->setClipRegion(windowRegion());
+        m_ctListRect = QRect();
+        WasabiQt::TreePainter::paintTree(
+            p, tree(), registry(), fonts(),
+            canvas, host(), &gammasets(), &colors(),
+            m_ctSelectedRow, m_ctTopRow,
+            &m_ctListRect, &m_ctTopRow, m_visMode);
     }
 
-protected:
     void mousePressEvent(QMouseEvent *e) override {
         if (e->button() == Qt::RightButton) {
             // Right-click anywhere → Winamp-style context menu.
@@ -546,7 +552,9 @@ protected:
                         return;
                     }
                 }
-                if (WasabiQt::dispatchAction(action, m_host, this))
+                // dispatchAction wants a QWidget* embedder for file
+                // dialogs; QQuickItem isn't a QWidget so pass nullptr.
+                if (WasabiQt::dispatchAction(action, m_host, nullptr))
                     return;
                 // Universal Maki click dispatch: when no built-in
                 // action fired, broadcast onLeftClick to any handler
@@ -736,13 +744,13 @@ protected:
                     p.x(), p.y(),
                     hit ? hit->id.toLocal8Bit().constData() : "(null)",
                     hit2 ? hit2->id.toLocal8Bit().constData() : "(null)");
-            if (windowHandle() && windowHandle()->startSystemMove())
+            if (window() && window()->startSystemMove())
                 return;
             m_dragOrigin = e->globalPosition().toPoint() -
-                           frameGeometry().topLeft();
+                           (window() ? window()->position() : QPoint(0,0));
             m_dragging = true;
         }
-        WasabiQt::SkinView::mousePressEvent(e);
+        WasabiQt::SkinQuickItem::mousePressEvent(e);
     }
     void mouseMoveEvent(QMouseEvent *e) override {
         if (!m_sliderAction.isEmpty() &&
@@ -765,22 +773,28 @@ protected:
             setColorThemesTopRow(int(frac * m_ctMaxTop + 0.5));
             return;
         }
-        if (m_dragging && (e->buttons() & Qt::LeftButton)) {
-            move(e->globalPosition().toPoint() - m_dragOrigin);
+        if (m_dragging && (e->buttons() & Qt::LeftButton) && window()) {
+            window()->setPosition(e->globalPosition().toPoint() - m_dragOrigin);
         }
-        WasabiQt::SkinView::mouseMoveEvent(e);
+        WasabiQt::SkinQuickItem::mouseMoveEvent(e);
     }
     void mouseReleaseEvent(QMouseEvent *e) override {
         m_dragging = false;
         m_ctDragging = false;
         m_sliderAction.clear();
-        WasabiQt::SkinView::mouseReleaseEvent(e);
+        WasabiQt::SkinQuickItem::mouseReleaseEvent(e);
     }
     void keyPressEvent(QKeyEvent *e) override {
         const bool ctrl = e->modifiers() & Qt::ControlModifier;
-        if (e->key() == Qt::Key_Escape) { close(); return; }
+        if (e->key() == Qt::Key_Escape) {
+            if (window()) window()->close();
+            return;
+        }
         if (ctrl && (e->key() == Qt::Key_O || e->key() == Qt::Key_L)) {
-            const QUrl u = m_host->pickFile(this);
+            // pickFile takes a QWidget* for the file-dialog parent.
+            // Pass nullptr so the dialog parents to QGuiApplication;
+            // the QQuickWindow itself isn't a QWidget.
+            const QUrl u = m_host->pickFile(nullptr);
             if (!u.isEmpty()) {
                 m_host->player().setSource(u);
                 m_host->player().play();
@@ -814,7 +828,7 @@ protected:
             setColorThemesTopRow(qMax(0, colorThemesTopRow() - 5));
             return;
         }
-        WasabiQt::SkinView::keyPressEvent(e);
+        WasabiQt::SkinQuickItem::keyPressEvent(e);
     }
     void wheelEvent(QWheelEvent *e) override {
         // Wheel scroll inside the colour-themes list moves the
@@ -834,7 +848,7 @@ protected:
                 colorThemesTopRow() - steps));
             return;
         }
-        WasabiQt::SkinView::wheelEvent(e);
+        WasabiQt::SkinQuickItem::wheelEvent(e);
     }
 
 public:
@@ -848,12 +862,12 @@ public:
         WasabiQt::SkinXml::Document doc;
         QString err;
         if (!WasabiQt::SkinXml::parse(skinXmlPath, doc, &err)) {
-            QMessageBox::warning(this, tr("Skin load failed"),
+            QMessageBox::warning(nullptr, tr("Skin load failed"),
                 tr("Could not parse %1:\n%2").arg(skinXmlPath, err));
             return;
         }
         if (!load(doc, "main", "normal", &err)) {
-            QMessageBox::warning(this, tr("Skin load failed"),
+            QMessageBox::warning(nullptr, tr("Skin load failed"),
                 tr("Layout expand failed: %1").arg(err));
             return;
         }
@@ -1029,7 +1043,8 @@ public:
         optMenu->setStyleSheet(menuStyle);
         QAction *aotAct = optMenu->addAction("Always on top\tCtrl+T");
         aotAct->setCheckable(true);
-        aotAct->setChecked(windowFlags() & Qt::WindowStaysOnTopHint);
+        aotAct->setChecked(window() &&
+            (window()->flags() & Qt::WindowStaysOnTopHint));
 
         QAction *dsizeAct = optMenu->addAction("Double size\tCtrl+D");
         dsizeAct->setCheckable(true);
@@ -1120,7 +1135,9 @@ public:
         if (!sel) return;
 
         if (sel == playFileAct) {
-            const QUrl u = m_host->pickFile(this);
+            // QQuickItem isn't a QWidget; pass nullptr so the file
+            // dialog parents to QGuiApplication.
+            const QUrl u = m_host->pickFile(nullptr);
             if (!u.isEmpty()) {
                 m_host->player().setSource(u);
                 m_host->player().play();
@@ -1128,7 +1145,7 @@ public:
             }
         }
         else if (sel == playLocAct) {
-            PlayLocationDialog dlg(this);
+            PlayLocationDialog dlg(nullptr);
             if (dlg.exec() == QDialog::Accepted) {
                 QString url = dlg.getUrl();
                 if (!url.isEmpty()) {
@@ -1144,7 +1161,7 @@ public:
         }
         else if (sel == addBmAct) {
             bool ok;
-            const QString title = QInputDialog::getText(this,
+            const QString title = QInputDialog::getText(nullptr,
                 tr("Add Bookmark"), tr("Bookmark title:"),
                 QLineEdit::Normal, QFileInfo(currentFile).fileName(), &ok);
             if (ok && !title.isEmpty())
@@ -1156,14 +1173,16 @@ public:
             m_host->player().play();
         }
         else if (sel == aotAct) {
-            Qt::WindowFlags f = windowFlags();
-            if (sel->isChecked()) f |=  Qt::WindowStaysOnTopHint;
-            else                  f &= ~Qt::WindowStaysOnTopHint;
-            setWindowFlags(f);
-            show();
+            if (auto *w = window()) {
+                Qt::WindowFlags f = w->flags();
+                if (sel->isChecked()) f |=  Qt::WindowStaysOnTopHint;
+                else                  f &= ~Qt::WindowStaysOnTopHint;
+                w->setFlags(f);
+                w->show();
+            }
         }
         else if (sel == prefsAct) {
-            auto *prefs = new PreferencesDialog(this);
+            auto *prefs = new PreferencesDialog(nullptr);
             connect(prefs, &PreferencesDialog::skinChanged,
                     this, [this](const QString &path){
                 // Persist the picked skin.  Modern skins reload in
@@ -1187,7 +1206,7 @@ public:
         }
         else if (sel == jumpTimeAct) {
             bool ok;
-            QString timeStr = QInputDialog::getText(this,
+            QString timeStr = QInputDialog::getText(nullptr,
                 "Jump to Time",
                 "Enter time (MM:SS or seconds):",
                 QLineEdit::Normal, "", &ok);
@@ -1209,14 +1228,14 @@ public:
             QString skinPath;
             const QUrl src = m_host->player().source();
             if (src.isLocalFile()) skinPath = QFileInfo(src.toLocalFile()).absolutePath();
-            AboutDialog about(skinPath, this);
+            AboutDialog about(skinPath, nullptr);
             about.exec();
         }
         else if (sel == visOffAct)  setVisMode(0);
         else if (sel == visSpecAct) setVisMode(1);
         else if (sel == visOscAct)  setVisMode(2);
         else if (sel == visVuAct)   setVisMode(3);
-        else if (sel == quitAct) close();
+        else if (sel == quitAct) { if (window()) window()->close(); }
     }
 
     void applySliderDrag(int xInWindow) {
@@ -1297,9 +1316,11 @@ public:
         // + button.h(~7) + a couple px of padding.
         const QSize full = layoutNativeSize();
         const int compactH = 17 + 118 + 7 + 2;  // 144 px
-        setMinimumSize(0, 0);
-        setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
-        resize(full.width(), open ? full.height() : compactH);
+        if (auto *w = window()) {
+            w->setMinimumSize(QSize(0, 0));
+            w->setMaximumSize(QSize(16777215, 16777215));
+            w->resize(full.width(), open ? full.height() : compactH);
+        }
         rebuildWindowRegion();
         update();
     }
@@ -1379,20 +1400,23 @@ inline QUrl QtampHost::pickFile(QWidget *embedder) {
     return u;
 }
 
+// QQuickWindow that hosts the QtampPlayerWindow item.  QtampHost
+// reaches it via m_window->window().
 inline bool QtampHost::close() {
-    if (m_window) m_window->close();
+    if (m_window && m_window->window()) m_window->window()->close();
     return m_window != nullptr;
 }
 
 inline bool QtampHost::minimize() {
-    if (m_window) m_window->showMinimized();
+    if (m_window && m_window->window()) m_window->window()->showMinimized();
     return m_window != nullptr;
 }
 
 inline bool QtampHost::maximize() {
-    if (!m_window) return false;
-    if (m_window->isMaximized()) m_window->showNormal();
-    else                          m_window->showMaximized();
+    if (!m_window || !m_window->window()) return false;
+    QQuickWindow *w = m_window->window();
+    if (w->visibility() == QWindow::Maximized) w->showNormal();
+    else                                       w->showMaximized();
     return true;
 }
 
@@ -1402,18 +1426,19 @@ inline bool QtampHost::toggleShade() {
     // `<container id="main"><layout id="shade">...</layout>` layout,
     // but our window currently hosts only the "normal" layout.  For
     // now, toggle between the painted-extent-only height (drawer
-    // hidden) and a 30-px-tall preview by manipulating the layout
-    // root's height.  Falls back to a no-op-true so the click is
+    // hidden) and a 30-px-tall preview by manipulating the QQuickWindow's
+    // height directly.  Falls back to no-op-true so the click is
     // consumed.  TODO: switch to the actual shade layout when the
     // SkinDoc carries one.
-    if (!m_window) return true;
-    const int curH = m_window->height();
+    if (!m_window || !m_window->window()) return true;
+    QQuickWindow *w = m_window->window();
+    const int curH = w->height();
     const int shadeH = 30;
     if (curH > shadeH + 16) {
         m_savedHeight = curH;
-        m_window->resize(m_window->width(), shadeH);
+        w->resize(w->width(), shadeH);
     } else if (m_savedHeight > 0) {
-        m_window->resize(m_window->width(), m_savedHeight);
+        w->resize(w->width(), m_savedHeight);
         m_savedHeight = 0;
     }
     return true;
@@ -1421,15 +1446,14 @@ inline bool QtampHost::toggleShade() {
 
 inline bool QtampHost::showSystemMenu(QWidget *embedder) {
     // Route SYSMENU action to the same right-click context menu the
-    // window already builds.  Synthesise a right-click QContextMenu
-    // event at the embedder's current cursor position so the existing
-    // showContextMenu path runs.  Done via QMetaObject::invokeMethod
-    // so we don't have to expose showContextMenu publicly.
-    QWidget *target = embedder ? embedder
-                               : static_cast<QWidget *>(m_window);
-    if (!target) return true;
+    // QtampPlayerWindow item builds.  showContextMenu is Q_INVOKABLE
+    // on the QQuickItem subclass so QMetaObject::invokeMethod can
+    // dispatch even though the QQuickItem isn't a QWidget.  Sub-windows
+    // (EQ / Playlist / ...) still pass a QWidget embedder for parent.
+    Q_UNUSED(embedder);
+    if (!m_window) return true;
     const QPoint pos = QCursor::pos();
-    QMetaObject::invokeMethod(target, "showContextMenu",
+    QMetaObject::invokeMethod(m_window, "showContextMenu",
                                Qt::QueuedConnection,
                                Q_ARG(QPoint, pos));
     return true;
@@ -1488,7 +1512,11 @@ int main(int argc, char *argv[]) {
   // Drawer/click/setMask/animations all flow through the QML scene
   // graph.  The existing QWidget path stays the default until the
   // QML path reaches parity for auxiliary windows + colorthemes UI.
-  const bool useQmlRenderer = takeFlag(argc, argv, "--qml-renderer");
+  // Phase 6 migration: --qml-renderer used to open a parallel
+  // SkinQuickItem preview while QWidget was the primary path.  Now
+  // QML is primary; the flag is silently accepted for backwards
+  // compatibility but is a no-op.
+  (void)takeFlag(argc, argv, "--qml-renderer");
 
   // Modern skins paint their own rounded chrome with alpha-cut
   // corners — the host surface needs an alpha channel for those
@@ -1554,7 +1582,17 @@ int main(int argc, char *argv[]) {
     }
 
     auto *host = new QtampHost();
+    // Phase 6 migration: QtampPlayerWindow is now a QQuickItem
+    // hosted by a QQuickView (frameless transparent QQuickWindow).
+    // The view is the OS window; the item is the renderer/input
+    // surface.  QtampHost reaches the window via view->window()
+    // (chained through the QQuickItem).
+    auto *qview = new QQuickView();
+    qview->setFlag(Qt::FramelessWindowHint);
+    qview->setColor(Qt::transparent);
+    qview->setResizeMode(QQuickView::SizeRootObjectToView);
     auto *view = new QtampPlayerWindow(host);
+    qview->setContent(QUrl(), nullptr, view);
     host->bindWindow(view);
     if (!view->load(doc, "main", "normal", &err)) {
       fprintf(stderr, "qtamp: layout load failed: %s\n", err.toLocal8Bit().constData());
@@ -1684,8 +1722,8 @@ int main(int argc, char *argv[]) {
       QSettings s(configPath(), QSettings::IniFormat);
       s.setValue("skin", modernSkinPath);
     }
-    view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
-    view->resize(view->layoutNativeSize());
+    qview->setTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
+    qview->resize(view->layoutNativeSize());
     // Task #76: auto-shrink to painted-region extent after Maki
     // mutations (e.g. config drawer slides off-screen via
     // setXmlParam("y", "-263") leaves a transparent gap below the
@@ -1693,37 +1731,13 @@ int main(int argc, char *argv[]) {
     // doesn't bleed through).  Off by default in qtWasabi so other
     // embedders preserve explicit Maki sizing; qtamp opts in.
     view->setAutoShrinkToRegion(true);
-    view->show();
+    qview->show();
 
-    // Phase 6: opt-in QQuickWindow + SkinQuickItem mirror window.
-    // Loads the SAME skin doc into a SkinQuickItem hosted by a
-    // frameless transparent QQuickWindow.  The QWidget window keeps
-    // running side-by-side so auxiliary UI (subwindows, context menu,
-    // colour-themes list) continues to work; this mirror demonstrates
-    // the QML renderer is functional end-to-end on the same Maki VM.
-    if (useQmlRenderer) {
-        auto *qview = new QQuickView();
-        qview->setFlag(Qt::FramelessWindowHint);
-        qview->setColor(Qt::transparent);
-        qview->setResizeMode(QQuickView::SizeRootObjectToView);
-        auto *item = new WasabiQt::SkinQuickItem();
-        QString qerr;
-        if (!item->load(doc, "main", "normal", &qerr)) {
-            fprintf(stderr, "qtamp: qml-renderer load failed: %s\n",
-                    qerr.toLocal8Bit().constData());
-        } else {
-            item->setHost(host);
-            qview->setContent(QUrl(), nullptr, item);
-            qview->resize(item->layoutNativeSize());
-            qview->setTitle("Qtamp QML — " +
-                            QFileInfo(modernSkinPath).fileName());
-            qview->show();
-            fprintf(stderr,
-                "[qml-renderer] preview window up (%dx%d)\n",
-                item->layoutNativeSize().width(),
-                item->layoutNativeSize().height());
-        }
-    }
+    // (Phase 6 migration: the QML render path is now PRIMARY.  The
+    // previous `--qml-renderer` opt-in flag opened a parallel mirror
+    // window while QWidget was primary; with the migration complete
+    // the flag is silently accepted for backwards-compat but doesn't
+    // open a second window.)
 
     // Phase 8 hot-reload: opt-in via WASABIQT_HOT_RELOAD=1.  Watches
     // every XML/Maki source under the skin directory and triggers a
@@ -1828,8 +1842,12 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         }
         screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
       }
-      QTimer::singleShot(screenshotDelayMs, view, [view, screenshotPath]() {
-        QPixmap shot = view->grab();
+      QTimer::singleShot(screenshotDelayMs, view, [view, qview, screenshotPath]() {
+        // QQuickWindow::grabWindow returns the rendered QImage from
+        // the scene graph; equivalent of QWidget::grab() for the new
+        // QML render path.
+        Q_UNUSED(view);
+        QImage shot = qview->grabWindow();
         if (shot.save(screenshotPath)) {
           qInfo() << "qtamp: wrote" << screenshotPath
                   << "(" << shot.width() << "x" << shot.height() << ")";
