@@ -1462,16 +1462,7 @@ int main(int argc, char *argv[]) {
             // pushes the chrome off-screen.
             WasabiQt::registerSkinResizeCallback(
                 [view](int w, int h) {
-                    view->resize(w, h);
-                    // The layout root's `w`/`h` attrs are read by the
-                    // chrome renderer for relative positioning; keep
-                    // them in sync with the new window size so
-                    // relatw/relath children re-flow correctly.
-                    auto &t = const_cast<WasabiQt::Layout::ResolvedWidget &>(
-                        view->tree());
-                    t.attrs.insert(QStringLiteral("w"), QString::number(w));
-                    t.attrs.insert(QStringLiteral("h"), QString::number(h));
-                    view->update();
+                    view->resizeLayoutTo(QSize(w, h));
                 });
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
