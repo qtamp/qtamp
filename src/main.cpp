@@ -1432,12 +1432,19 @@ int main(int argc, char *argv[]) {
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
             runtime.dispatchXuiParams(mutableTree);
-            // onResize event firing is wired but Maki's reverse-decl
-            // arg push order vs the handler's POP order is subtle and
-            // current dispatch gives layoutW=652 to the handler that
-            // expects 354 — needs investigation before turning on.
-            // const QSize ls = view->layoutNativeSize();
-            // runtime.dispatchInitialResize(ls.width(), ls.height());
+            // onResize event firing is wired but neither REVERSE-decl
+            // nor DECL push order produces the expected w=354 — both
+            // result in setXmlParam(x, ...) values that don't match
+            // configtabs.m's w/2-163 = 14 expectation.  Multiple
+            // scripts may have main.onResize handlers stomping each
+            // other or the receiver/handler binding has another
+            // wrinkle to understand.  Re-enable with WASABIQT_FIRE_
+            // RESIZE=1 once that's sorted; until then runKnownScripts
+            // centring keeps the chrome visually correct.
+            if (::getenv("WASABIQT_FIRE_RESIZE")) {
+                const QSize ls = view->layoutNativeSize();
+                runtime.dispatchInitialResize(ls.width(), ls.height());
+            }
         }
         view->update();
     }
