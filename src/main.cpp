@@ -876,7 +876,11 @@ public:
             m_runtime->loadScripts(doc, mutableTree);
             m_runtime->dispatchOnScriptLoaded();
             m_runtime->dispatchXuiParams(mutableTree);
-            if (::getenv("WASABIQT_FIRE_RESIZE")) {
+            // Fire the initial onResize on every script that registered
+            // a handler.  configtabs.m centres drawer.content via this
+            // path; WASABIQT_NO_FIRE_RESIZE=1 skips it for offscreen
+            // regression baselines that want the pre-resize chrome.
+            if (!::getenv("WASABIQT_NO_FIRE_RESIZE")) {
                 m_runtime->dispatchInitialResize(
                     layoutNativeSize().width(),
                     layoutNativeSize().height());
@@ -1624,16 +1628,16 @@ int main(int argc, char *argv[]) {
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
             runtime.dispatchXuiParams(mutableTree);
-            // onResize event firing is wired but neither REVERSE-decl
-            // nor DECL push order produces the expected w=354 — both
-            // result in setXmlParam(x, ...) values that don't match
-            // configtabs.m's w/2-163 = 14 expectation.  Multiple
-            // scripts may have main.onResize handlers stomping each
-            // other or the receiver/handler binding has another
-            // wrinkle to understand.  Re-enable with WASABIQT_FIRE_
-            // RESIZE=1 once that's sorted; until then runKnownScripts
-            // centring keeps the chrome visually correct.
-            if (::getenv("WASABIQT_FIRE_RESIZE")) {
+            // Fire the initial onResize on every script that bound a
+            // handler.  configtabs.m's `main.onResize(x, y, w, h) { ...
+            // DrawerContent.setXmlParam("x", w/2 - 163); }` now
+            // correctly evaluates to 14 inside the Maki VM (was 0 prior
+            // to the SOM::makeDouble type-aware fix), so the static
+            // drawer.content hardcode in Layout.cpp is dropped and
+            // centring runs through real Maki dispatch.
+            // WASABIQT_NO_FIRE_RESIZE=1 skips this for the offscreen
+            // visual baselines that want the pre-resize chrome.
+            if (!::getenv("WASABIQT_NO_FIRE_RESIZE")) {
                 const QSize ls = view->layoutNativeSize();
                 runtime.dispatchInitialResize(ls.width(), ls.height());
             }
