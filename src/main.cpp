@@ -1566,6 +1566,23 @@ int main(int argc, char *argv[]) {
           host->player().play();
         });
       }
+      // Optional: fire onLeftClick on a widget id before the
+      // screenshot.  Lets the visual-test pipeline exercise script-
+      // defined button handlers (drawer toggles, mute, etc.)
+      // without an actual click event.  Comma-separated lets us
+      // chain multiple actions.
+      if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
+        screenshotDelayMs = qMax(screenshotDelayMs, 500);
+        const QString s = QString::fromLocal8Bit(c);
+        const QStringList ids = s.split(',', Qt::SkipEmptyParts);
+        QTimer::singleShot(50, view, [view, ids]() {
+          for (const QString &id : ids) {
+            qInfo().noquote() << "qtamp: firing onLeftClick on" << id;
+            WasabiQt::fireWidgetEvent(id, L"onLeftClick");
+          }
+          view->update();
+        });
+      }
       QTimer::singleShot(screenshotDelayMs, view, [view, screenshotPath]() {
         QPixmap shot = view->grab();
         if (shot.save(screenshotPath)) {
