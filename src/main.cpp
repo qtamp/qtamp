@@ -1626,6 +1626,13 @@ int main(int argc, char *argv[]) {
     }
     view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
     view->resize(view->layoutNativeSize());
+    // Task #76: auto-shrink to painted-region extent after Maki
+    // mutations (e.g. config drawer slides off-screen via
+    // setXmlParam("y", "-263") leaves a transparent gap below the
+    // chrome; auto-shrink resizes the OS window so the desktop
+    // doesn't bleed through).  Off by default in qtWasabi so other
+    // embedders preserve explicit Maki sizing; qtamp opts in.
+    view->setAutoShrinkToRegion(true);
     view->show();
 
     // Phase 6: opt-in QQuickWindow + SkinQuickItem mirror window.
