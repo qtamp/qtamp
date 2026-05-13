@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 # Try Qt6 first, fall back to Qt5
-find_package(Qt6 QUIET COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL OpenGLWidgets)
+find_package(Qt6 QUIET COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL OpenGLWidgets Quick Qml)
 if(Qt6_FOUND)
     set(QT_VERSION_MAJOR 6)
     message(STATUS "Building with Qt6")
@@ -86,9 +86,10 @@ target_link_libraries(qtamp
     Qt${QT_VERSION_MAJOR}::MultimediaWidgets
     Qt${QT_VERSION_MAJOR}::OpenGL
 )
-# Qt6 splits OpenGLWidgets into its own module; Qt5 includes it in Widgets
+# Qt6 splits OpenGLWidgets into its own module; Qt5 includes it in Widgets.
+# Qt::Quick + Qt::Qml drive the --qml-renderer SkinQuickItem preview.
 if(QT_VERSION_MAJOR EQUAL 6)
-    target_link_libraries(qtamp Qt6::OpenGLWidgets)
+    target_link_libraries(qtamp Qt6::OpenGLWidgets Qt6::Quick Qt6::Qml)
 endif()
 
 

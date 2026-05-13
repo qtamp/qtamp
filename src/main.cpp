@@ -7,6 +7,8 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QIcon>
+#include <QQuickItem>
+#include <QQuickView>
 #include <QProcess>
 #include <QSettings>
 #include <QSplashScreen>
@@ -23,6 +25,7 @@
 #ifdef WINAMP_HAVE_WASABIQT
 #  include <WasabiQt/SkinXml.h>
 #  include <WasabiQt/SkinView.h>
+#  include <WasabiQt/SkinQuickItem.h>
 #  include <WasabiQt/SkinRuntime.h>
 #  include <WasabiQt/Layout.h>
 #  include <WasabiQt/BitmapRegistry.h>
@@ -1419,6 +1422,13 @@ int main(int argc, char *argv[]) {
   QString cliClassicSkin = takeStringArg(argc, argv, "--classic-skin");
   QString screenshotPath = takeScreenshotArg(argc, argv);
   const bool listActions = takeFlag(argc, argv, "--list-actions");
+  // Phase 6: opt-in QQuickWindow + SkinQuickItem renderer.  When set,
+  // qtamp creates a frameless transparent QQuickView with a
+  // SkinQuickItem instead of the QWidget-based QtampPlayerWindow.
+  // Drawer/click/setMask/animations all flow through the QML scene
+  // graph.  The existing QWidget path stays the default until the
+  // QML path reaches parity for auxiliary windows + colorthemes UI.
+  const bool useQmlRenderer = takeFlag(argc, argv, "--qml-renderer");
 
   // Modern skins paint their own rounded chrome with alpha-cut
   // corners — the host surface needs an alpha channel for those
@@ -1617,6 +1627,36 @@ int main(int argc, char *argv[]) {
     view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
     view->resize(view->layoutNativeSize());
     view->show();
+
+    // Phase 6: opt-in QQuickWindow + SkinQuickItem mirror window.
+    // Loads the SAME skin doc into a SkinQuickItem hosted by a
+    // frameless transparent QQuickWindow.  The QWidget window keeps
+    // running side-by-side so auxiliary UI (subwindows, context menu,
+    // colour-themes list) continues to work; this mirror demonstrates
+    // the QML renderer is functional end-to-end on the same Maki VM.
+    if (useQmlRenderer) {
+        auto *qview = new QQuickView();
+        qview->setFlag(Qt::FramelessWindowHint);
+        qview->setColor(Qt::transparent);
+        qview->setResizeMode(QQuickView::SizeRootObjectToView);
+        auto *item = new WasabiQt::SkinQuickItem();
+        QString qerr;
+        if (!item->load(doc, "main", "normal", &qerr)) {
+            fprintf(stderr, "qtamp: qml-renderer load failed: %s\n",
+                    qerr.toLocal8Bit().constData());
+        } else {
+            item->setHost(host);
+            qview->setContent(QUrl(), nullptr, item);
+            qview->resize(item->layoutNativeSize());
+            qview->setTitle("Qtamp QML — " +
+                            QFileInfo(modernSkinPath).fileName());
+            qview->show();
+            fprintf(stderr,
+                "[qml-renderer] preview window up (%dx%d)\n",
+                item->layoutNativeSize().width(),
+                item->layoutNativeSize().height());
+        }
+    }
 
     // Phase 8 hot-reload: opt-in via WASABIQT_HOT_RELOAD=1.  Watches
     // every XML/Maki source under the skin directory and triggers a
