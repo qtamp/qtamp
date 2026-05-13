@@ -565,6 +565,20 @@ protected:
                 tree(), p, /*actionOnly=*/false,
                 qtampImageSize, &registry(), nullptr);
             if (hit2) {
+                // Universal Maki click dispatch on widgets without
+                // action= (e.g. videoavs.open / videoavs.close
+                // buttons drive the upper drawer purely via
+                // script-defined onLeftClick handlers in videoavs.m).
+                if (!hit2->id.isEmpty()) {
+                    int fired = WasabiQt::fireWidgetEvent(
+                        hit2->id, L"onLeftClick");
+                    if (fired > 0) {
+                        update();
+                        return;
+                    }
+                }
+            }
+            if (hit2) {
                 // The `.off` tab variants ship with a top-level
                 // `mousetrapTab*` layer, but the `.on` variants
                 // don't — clicking the active tab lands on its
@@ -1440,6 +1454,24 @@ int main(int argc, char *argv[]) {
                     if (h->isPlaying()) return 1;
                     if (h->isPaused())  return -1;
                     return 0;
+                });
+            // Maki Layout.setTarget* → gotoTarget chain resizes the
+            // window.  Used by drawer.m's openDrawer/closeDrawer for
+            // the upper video/vis drawer — without this the drawer
+            // becomes visible inside the original-sized window and
+            // pushes the chrome off-screen.
+            WasabiQt::registerSkinResizeCallback(
+                [view](int w, int h) {
+                    view->resize(w, h);
+                    // The layout root's `w`/`h` attrs are read by the
+                    // chrome renderer for relative positioning; keep
+                    // them in sync with the new window size so
+                    // relatw/relath children re-flow correctly.
+                    auto &t = const_cast<WasabiQt::Layout::ResolvedWidget &>(
+                        view->tree());
+                    t.attrs.insert(QStringLiteral("w"), QString::number(w));
+                    t.attrs.insert(QStringLiteral("h"), QString::number(h));
+                    view->update();
                 });
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
