@@ -2,8 +2,10 @@
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QIcon>
 #include <QProcess>
 #include <QSettings>
@@ -828,10 +830,11 @@ protected:
 
 public:
     // Reload the modern skin at runtime — re-parses the document,
-    // re-expands the layout, replays the static well-known-scripts
-    // and re-renders.  Mirrors the live-skin-swap path that the
-    // upstream winamp-linux PreferencesDialog drives through its
-    // `skinChanged(path)` signal.
+    // re-expands the layout, replays the static well-known-scripts,
+    // re-runs the Maki VM, and re-renders.  Mirrors the live-skin-swap
+    // path that the upstream winamp-linux PreferencesDialog drives
+    // through its `skinChanged(path)` signal.  Also used by the Phase 8
+    // hot-reload watcher when a skin XML file changes on disk.
     void reloadSkin(const QString &skinXmlPath) {
         WasabiQt::SkinXml::Document doc;
         QString err;
@@ -853,11 +856,77 @@ public:
             tree());
         WasabiQt::Layout::runKnownScripts(mutableTree,
                                           layoutNativeSize().width());
-        // configtabs.maki's onScriptLoaded now drives the drawer state
-        // (reads DrawerOpen from privateIntStore, fires OpenDrawer)
-        // so qtamp's own setDrawerOpen tree-mutation is no longer
-        // needed after a reload.
+        rebuildWindowRegion();
+        // Re-run the Maki VM if the embedder gave us a runtime handle.
+        // reset() tears down the prior VM state (scripts, system objects,
+        // widget objects, global tables) so the new skin starts clean
+        // — otherwise the previous skin's scripts keep firing alongside
+        // the new ones.
+        if (m_runtime) {
+            m_runtime->reset();
+            m_runtime->loadScripts(doc, mutableTree);
+            m_runtime->dispatchOnScriptLoaded();
+            m_runtime->dispatchXuiParams(mutableTree);
+            if (::getenv("WASABIQT_FIRE_RESIZE")) {
+                m_runtime->dispatchInitialResize(
+                    layoutNativeSize().width(),
+                    layoutNativeSize().height());
+            }
+        }
+        update();
     }
+
+    // Phase 8 hot-reload: watch every XML file under the skin
+    // directory for changes and trigger a full reload via
+    // `reloadSkin(rootXml)` ~250 ms after the last save batches.
+    // Useful for skin authors iterating on layout / colour / script
+    // edits without restarting qtamp.  Idempotent — calling again
+    // with a new root path swaps the watcher's directory.
+    void installHotReloadWatcher(const QString &rootXmlPath) {
+        const QString skinDir = QFileInfo(rootXmlPath).absolutePath();
+        if (!m_skinWatcher) {
+            m_skinWatcher = new QFileSystemWatcher(this);
+            m_reloadDebounce = new QTimer(this);
+            m_reloadDebounce->setSingleShot(true);
+            m_reloadDebounce->setInterval(250);
+            connect(m_reloadDebounce, &QTimer::timeout, this,
+                [this]() {
+                    if (!m_hotReloadRoot.isEmpty()) {
+                        fprintf(stderr,
+                            "[hot-reload] reloading %s\n",
+                            m_hotReloadRoot.toLocal8Bit().constData());
+                        reloadSkin(m_hotReloadRoot);
+                    }
+                });
+            connect(m_skinWatcher,
+                    &QFileSystemWatcher::fileChanged,
+                    this, [this](const QString &) {
+                        m_reloadDebounce->start();
+                    });
+            connect(m_skinWatcher,
+                    &QFileSystemWatcher::directoryChanged,
+                    this, [this](const QString &) {
+                        m_reloadDebounce->start();
+                    });
+        }
+        // Swap targets.
+        const QStringList prevFiles = m_skinWatcher->files();
+        const QStringList prevDirs  = m_skinWatcher->directories();
+        if (!prevFiles.isEmpty()) m_skinWatcher->removePaths(prevFiles);
+        if (!prevDirs.isEmpty())  m_skinWatcher->removePaths(prevDirs);
+
+        m_hotReloadRoot = rootXmlPath;
+        m_skinWatcher->addPath(skinDir);
+
+        QDirIterator it(skinDir, {"*.xml", "*.maki", "*.m"},
+                        QDir::Files, QDirIterator::Subdirectories);
+        QStringList xmls;
+        while (it.hasNext()) xmls << it.next();
+        if (!xmls.isEmpty()) m_skinWatcher->addPaths(xmls);
+    }
+
+    // Hand the SkinRuntime to the window so reloadSkin can reset it.
+    void setSkinRuntime(WasabiQt::SkinRuntime *r) { m_runtime = r; }
 
 private:
     // Winamp-style right-click context menu.  Ported from
@@ -1256,6 +1325,14 @@ public:
     WasabiQt::SkinXml::Document m_doc;
     QHash<QString, WasabiQt::SkinView *> m_subwindows;
     bool m_drawerOpen = true;
+    // Phase 8 hot-reload — XML/script edits trigger reloadSkin via a
+    // debounced QFileSystemWatcher.  m_runtime is held so reloadSkin
+    // can reset() the Maki VM cleanly; nullable to keep the class
+    // usable without a runtime (offscreen rendering tests).
+    WasabiQt::SkinRuntime *m_runtime         = nullptr;
+    QFileSystemWatcher    *m_skinWatcher     = nullptr;
+    QTimer                *m_reloadDebounce  = nullptr;
+    QString                m_hotReloadRoot;
     // Visualisation mode (right-click → Visualization submenu).
     // 0=Off, 1=Spectrum (default), 2=Oscilloscope, 3=VU meter.
     int  m_visMode    = 1;
@@ -1452,6 +1529,7 @@ int main(int argc, char *argv[]) {
         // static well-known-script path).
         if (!::getenv("WASABIQT_NO_RUNTIME")) {
             static WasabiQt::SkinRuntime runtime;
+            view->setSkinRuntime(&runtime);
             // Route Maki getStatus() through to the live QMediaPlayer
             // state so playback-state-driven scripts (setposbarvisibility.
             // maki, classicplaystatus.maki, drawer.m) see the real
@@ -1539,6 +1617,22 @@ int main(int argc, char *argv[]) {
     view->setWindowTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
     view->resize(view->layoutNativeSize());
     view->show();
+
+    // Phase 8 hot-reload: opt-in via WASABIQT_HOT_RELOAD=1.  Watches
+    // every XML/Maki source under the skin directory and triggers a
+    // full reload (Maki VM reset + script reload + chrome repaint)
+    // after a 250 ms debounce.  Off by default so offscreen tests
+    // and prod sessions don't pay for inotify watchers + extra reload
+    // surface.
+    if (::getenv("WASABIQT_HOT_RELOAD")) {
+        const QString xml = QFileInfo(modernSkinPath).isDir()
+            ? QDir(modernSkinPath).filePath("skin.xml")
+            : modernSkinPath;
+        view->installHotReloadWatcher(xml);
+        fprintf(stderr,
+            "[hot-reload] watching %s\n",
+            QFileInfo(xml).absolutePath().toLocal8Bit().constData());
+    }
 
     // Visual-debug pipeline mirroring qtWasabi's render_layout: when
     // --screenshot is set, wait for the first paintEvent to land,
