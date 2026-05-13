@@ -1469,7 +1469,13 @@ int main(int argc, char *argv[]) {
             // pushes the chrome off-screen.
             WasabiQt::registerSkinResizeCallback(
                 [view](int w, int h) {
-                    view->resizeLayoutTo(QSize(w, h));
+                    // WASABIQT_NO_ANIM=1 forces the snap path (handy
+                    // for offscreen test pipelines that grab a single
+                    // frame and don't want to wait out a tween).
+                    if (::getenv("WASABIQT_NO_ANIM"))
+                        view->resizeLayoutTo(QSize(w, h));
+                    else
+                        view->animatedResizeLayoutTo(QSize(w, h), 200);
                 });
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
