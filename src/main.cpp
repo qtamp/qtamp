@@ -7,8 +7,10 @@
 #include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QIcon>
+#include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickView>
+#include <QQuickWindow>
 #include <QProcess>
 #include <QSettings>
 #include <QSplashScreen>
@@ -1582,23 +1584,63 @@ int main(int argc, char *argv[]) {
     }
 
     auto *host = new QtampHost();
-    // Phase 6 migration: QtampPlayerWindow is now a QQuickItem
-    // hosted by a QQuickView (frameless transparent QQuickWindow).
-    // The view is the OS window; the item is the renderer/input
-    // surface.  QtampHost reaches the window via view->window()
-    // (chained through the QQuickItem).
-    auto *qview = new QQuickView();
-    qview->setFlag(Qt::FramelessWindowHint);
-    qview->setColor(Qt::transparent);
-    qview->setResizeMode(QQuickView::SizeRootObjectToView);
+    // Phase 6 migration: QtampPlayerWindow is a QQuickItem hosted
+    // inside a QQuickWindow declared from QML.  A raw C++-constructed
+    // QQuickWindow doesn't get a valid wl_surface.commit on Wayfire/
+    // wlroots (the toplevel never appears in `wlrctl toplevel list`),
+    // even though Qt reports the window as visible.  The QML Window
+    // element handles the full xdg-shell setup correctly because it
+    // goes through the QML engine's window-lifecycle path.  We let
+    // QML create the Window, then attach our manually-constructed
+    // QtampPlayerWindow item to its contentItem.
     auto *view = new QtampPlayerWindow(host);
-    qview->setContent(QUrl(), nullptr, view);
-    host->bindWindow(view);
     if (!view->load(doc, "main", "normal", &err)) {
       fprintf(stderr, "qtamp: layout load failed: %s\n", err.toLocal8Bit().constData());
       return 4;
     }
     view->setSkinDocument(doc);
+
+    // Qt.Window | Qt.CustomizeWindowHint = no OS decoration, but
+    // still registers as a proper xdg-toplevel.  Qt.FramelessWindow
+    // Hint on QQuickWindow + Wayfire/wlroots silently prevents the
+    // surface from mapping (the toplevel never appears in
+    // `wlrctl toplevel list`), even though Qt reports the window
+    // as visible.  The QWidget path didn't hit this because
+    // QWidget's setWindowFlags interacts with the wayland-platform
+    // differently than QQuickWindow's setFlag.  CustomizeWindowHint
+    // strips all the title/min/max/close hints without going
+    // through that bad QQuickWindow code path.
+    // Qt.Window | Qt.CustomizeWindowHint = no OS decoration, but
+    // still registers as a proper xdg-toplevel.  Qt.FramelessWindow
+    // Hint on QQuickWindow + Wayfire/wlroots silently prevents the
+    // surface from mapping.  Start with visible: false so we can
+    // setParentItem(contentItem()) on our QtampPlayerWindow BEFORE
+    // the window attempts its first render — otherwise the first
+    // frame has no content and Wayfire never sees a buffer attach.
+    QQmlApplicationEngine engine;
+    const QByteArray windowQml =
+        "import QtQuick\n"
+        "import QtQuick.Window\n"
+        "Window {\n"
+        "    flags: Qt.Window | Qt.FramelessWindowHint\n"
+        "    color: 'transparent'\n"
+        "    width: 354; height: 280\n"
+        "    visible: true\n"
+        "}\n";
+    engine.loadData(windowQml);
+    if (engine.rootObjects().isEmpty()) {
+        fprintf(stderr, "qtamp: failed to instantiate QML Window\n");
+        return 4;
+    }
+    auto *qwin = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+    if (!qwin) {
+        fprintf(stderr, "qtamp: QML root is not a QQuickWindow\n");
+        return 4;
+    }
+    view->setParentItem(qwin->contentItem());
+    view->setSize(QSizeF(view->layoutNativeSize()));
+    qwin->resize(view->layoutNativeSize());
+    host->bindWindow(view);
 
     // Drive the chrome.  Two paths:
     //  1) Apply the static well-known-script equivalents
@@ -1722,16 +1764,13 @@ int main(int argc, char *argv[]) {
       QSettings s(configPath(), QSettings::IniFormat);
       s.setValue("skin", modernSkinPath);
     }
-    qview->setTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
-    qview->resize(view->layoutNativeSize());
+    qwin->setTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
+    qwin->resize(view->layoutNativeSize());
     // Task #76: auto-shrink to painted-region extent after Maki
-    // mutations (e.g. config drawer slides off-screen via
-    // setXmlParam("y", "-263") leaves a transparent gap below the
-    // chrome; auto-shrink resizes the OS window so the desktop
-    // doesn't bleed through).  Off by default in qtWasabi so other
-    // embedders preserve explicit Maki sizing; qtamp opts in.
+    // mutations.  Off by default in qtWasabi so other embedders
+    // preserve explicit Maki sizing; qtamp opts in.
     view->setAutoShrinkToRegion(true);
-    qview->show();
+    // (visible: true is set from QML; window is already mapped.)
 
     // (Phase 6 migration: the QML render path is now PRIMARY.  The
     // previous `--qml-renderer` opt-in flag opened a parallel mirror
@@ -1842,12 +1881,12 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         }
         screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
       }
-      QTimer::singleShot(screenshotDelayMs, view, [view, qview, screenshotPath]() {
+      QTimer::singleShot(screenshotDelayMs, view, [view, qwin, screenshotPath]() {
         // QQuickWindow::grabWindow returns the rendered QImage from
         // the scene graph; equivalent of QWidget::grab() for the new
         // QML render path.
         Q_UNUSED(view);
-        QImage shot = qview->grabWindow();
+        QImage shot = qwin->grabWindow();
         if (shot.save(screenshotPath)) {
           qInfo() << "qtamp: wrote" << screenshotPath
                   << "(" << shot.width() << "x" << shot.height() << ")";
