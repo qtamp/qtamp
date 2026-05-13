@@ -468,6 +468,10 @@ protected:
         p.setClipping(false);
         p.setCompositionMode(QPainter::CompositionMode_Source);
         p.drawImage(0, 0, buf);
+        // Feed the painted alpha to SkinView so alphaHitTest sees the
+        // same pixels we just drew — the override bypasses
+        // SkinView::paintEvent's own caching path.
+        setPaintedAlpha(std::move(buf));
     }
 
 protected:
@@ -548,125 +552,34 @@ protected:
                     }
                 }
             }
-            // Drawer tab switcher: the three `mousetrapTab*` layers
-            // sit on top of each tab.  They don't carry `action=`
-            // attrs so the action-only hit-test above ignores them
-            // — fall through to a wider hit-test and dispatch
-            // tab-switch internally.  Region is unaffected (the
-            // tab cluster has no sysregion), so we just toggle the
-            // on/off variants and the content pages and repaint.
-            const auto *hit2 = WasabiQt::Layout::hitTest(
-                tree(), p, /*actionOnly=*/false,
-                qtampImageSize, &registry(), nullptr);
-            if (hit2) {
-                // Universal Maki click dispatch on widgets without
-                // action= (e.g. videoavs.open / videoavs.close
-                // buttons drive the upper drawer purely via
-                // script-defined onLeftClick handlers in videoavs.m).
-                if (!hit2->id.isEmpty()) {
-                    int fired = WasabiQt::fireWidgetEvent(
-                        hit2->id, L"onLeftClick");
-                    if (::getenv("WASABIQT_TRACE_MAKI"))
-                        fprintf(stderr,
-                            "[click] (%d,%d) hit2 id=%s fired=%d\n",
-                            p.x(), p.y(),
-                            hit2->id.toLocal8Bit().constData(), fired);
-                    if (fired > 0) {
-                        update();
-                        return;
-                    }
-                }
-            }
-            // The topmost hit had no handler — but a sibling/lower
-            // widget at the same position might (e.g. drawer.button.
-            // open lives BEHIND player.main's chrome layer, so the
-            // chrome's window.bg2.right intercepts the click even
-            // though the drawer button visually shows through the
-            // chrome's transparent area).  Walk the full resolved
-            // tree at the click position and try fireWidgetEvent on
-            // every widget id we find — first one whose Maki handler
-            // returns >0 wins.  Without alpha-aware hit-test this is
-            // the cleanest way to let painted-but-z-below buttons
-            // catch clicks.
-            {
-                int firedAny = 0;
-                QString firedId;
-                auto attrBool = [](const QHash<QString, QString> &a,
-                                   const QString &k) {
-                    const QString v = a.value(k);
-                    return v == QStringLiteral("1") ||
-                           v.compare(QStringLiteral("true"),
-                                     Qt::CaseInsensitive) == 0;
-                };
-                auto resolve = [&](const QHash<QString, QString> &a,
-                                   QSize parent) -> QRect {
-                    int x = a.value(QStringLiteral("x")).toInt();
-                    int y = a.value(QStringLiteral("y")).toInt();
-                    int w = a.value(QStringLiteral("w")).toInt();
-                    int h = a.value(QStringLiteral("h")).toInt();
-                    if (attrBool(a, QStringLiteral("relatx")))
-                        x = parent.width()  + x;
-                    if (attrBool(a, QStringLiteral("relaty")))
-                        y = parent.height() + y;
-                    if (attrBool(a, QStringLiteral("relatw")))
-                        w = parent.width()  + w;
-                    if (attrBool(a, QStringLiteral("relath")))
-                        h = parent.height() + h;
-                    return QRect(x, y, w, h);
-                };
-                std::function<void(const WasabiQt::Layout::ResolvedWidget &,
-                                   QPoint, QSize)> walk =
-                    [&](const WasabiQt::Layout::ResolvedWidget &w,
-                        QPoint origin, QSize canvas) {
-                    if (w.attrs.value(QStringLiteral("visible")) ==
-                            QStringLiteral("0")) return;
-                    QRect r = resolve(w.attrs, canvas);
-                    QPoint childOrigin = origin;
-                    QSize childCanvas = canvas;
-                    if (w.tag != QStringLiteral("layout")) {
-                        childOrigin = QPoint(origin.x() + r.x(),
-                                             origin.y() + r.y());
-                    }
-                    if (r.width()  > 0) childCanvas.setWidth(r.width());
-                    if (r.height() > 0) childCanvas.setHeight(r.height());
-                    // Try children first (topmost-first).
-                    for (auto it = w.children.crbegin();
-                         it != w.children.crend(); ++it)
-                        walk(*it, childOrigin, childCanvas);
-                    if (firedAny > 0) return;
-                    if (w.id.isEmpty()) return;
-                    // Bbox at this widget's level.
-                    int width = r.width(), height = r.height();
-                    if ((width <= 0 || height <= 0)) {
-                        const QString img = w.attrs.value(
-                            QStringLiteral("image"));
-                        if (!img.isEmpty()) {
-                            const QSize is = qtampImageSize(img, &registry());
-                            if (width  <= 0) width  = is.width();
-                            if (height <= 0) height = is.height();
-                        }
-                    }
-                    if (width <= 0 || height <= 0) return;
-                    const QRect bbox(childOrigin.x(), childOrigin.y(),
-                                     width, height);
-                    if (!bbox.contains(p)) return;
-                    int fired = WasabiQt::fireWidgetEvent(
-                        w.id, L"onLeftClick");
-                    if (fired > 0) {
-                        firedAny = fired;
-                        firedId = w.id;
-                    }
-                };
-                walk(tree(), QPoint(0,0), layoutNativeSize());
-                if (firedAny > 0) {
-                    if (::getenv("WASABIQT_TRACE_MAKI"))
-                        fprintf(stderr,
-                            "[click] (%d,%d) deep hit id=%s fired=%d\n",
-                            p.x(), p.y(),
-                            firedId.toLocal8Bit().constData(), firedAny);
+            // Alpha-aware hit-test list: every widget at the click
+            // point that's opaque in the composite alpha, ordered
+            // topmost-first.  Wasabi's event model bubbles unhandled
+            // clicks down the z-order, so we iterate: the first widget
+            // whose Maki handler dispatches (fired > 0) consumes the
+            // click.  Chrome layers without handlers are skipped over
+            // — they're opaque pixels with no script binding, so the
+            // click should reach the button visually behind them.
+            const QList<const WasabiQt::Layout::ResolvedWidget *> hits =
+                alphaHitTestList(p, /*actionOnly=*/false,
+                                  qtampImageSize, &registry());
+            const WasabiQt::Layout::ResolvedWidget *hit2 = nullptr;
+            for (const auto *w : hits) {
+                if (!w || w->id.isEmpty()) continue;
+                int fired = WasabiQt::fireWidgetEvent(
+                    w->id, L"onLeftClick");
+                if (::getenv("WASABIQT_TRACE_MAKI"))
+                    fprintf(stderr,
+                        "[click] (%d,%d) alpha hit id=%s fired=%d\n",
+                        p.x(), p.y(),
+                        w->id.toLocal8Bit().constData(), fired);
+                if (fired > 0) {
                     update();
                     return;
                 }
+                // First widget with an id becomes the tab-switcher
+                // candidate even if it had no Maki handler.
+                if (!hit2) hit2 = w;
             }
             if (hit2) {
                 // The `.off` tab variants ship with a top-level
