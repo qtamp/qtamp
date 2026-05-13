@@ -566,10 +566,106 @@ protected:
                 if (!hit2->id.isEmpty()) {
                     int fired = WasabiQt::fireWidgetEvent(
                         hit2->id, L"onLeftClick");
+                    if (::getenv("WASABIQT_TRACE_MAKI"))
+                        fprintf(stderr,
+                            "[click] (%d,%d) hit2 id=%s fired=%d\n",
+                            p.x(), p.y(),
+                            hit2->id.toLocal8Bit().constData(), fired);
                     if (fired > 0) {
                         update();
                         return;
                     }
+                }
+            }
+            // The topmost hit had no handler — but a sibling/lower
+            // widget at the same position might (e.g. drawer.button.
+            // open lives BEHIND player.main's chrome layer, so the
+            // chrome's window.bg2.right intercepts the click even
+            // though the drawer button visually shows through the
+            // chrome's transparent area).  Walk the full resolved
+            // tree at the click position and try fireWidgetEvent on
+            // every widget id we find — first one whose Maki handler
+            // returns >0 wins.  Without alpha-aware hit-test this is
+            // the cleanest way to let painted-but-z-below buttons
+            // catch clicks.
+            {
+                int firedAny = 0;
+                QString firedId;
+                auto attrBool = [](const QHash<QString, QString> &a,
+                                   const QString &k) {
+                    const QString v = a.value(k);
+                    return v == QStringLiteral("1") ||
+                           v.compare(QStringLiteral("true"),
+                                     Qt::CaseInsensitive) == 0;
+                };
+                auto resolve = [&](const QHash<QString, QString> &a,
+                                   QSize parent) -> QRect {
+                    int x = a.value(QStringLiteral("x")).toInt();
+                    int y = a.value(QStringLiteral("y")).toInt();
+                    int w = a.value(QStringLiteral("w")).toInt();
+                    int h = a.value(QStringLiteral("h")).toInt();
+                    if (attrBool(a, QStringLiteral("relatx")))
+                        x = parent.width()  + x;
+                    if (attrBool(a, QStringLiteral("relaty")))
+                        y = parent.height() + y;
+                    if (attrBool(a, QStringLiteral("relatw")))
+                        w = parent.width()  + w;
+                    if (attrBool(a, QStringLiteral("relath")))
+                        h = parent.height() + h;
+                    return QRect(x, y, w, h);
+                };
+                std::function<void(const WasabiQt::Layout::ResolvedWidget &,
+                                   QPoint, QSize)> walk =
+                    [&](const WasabiQt::Layout::ResolvedWidget &w,
+                        QPoint origin, QSize canvas) {
+                    if (w.attrs.value(QStringLiteral("visible")) ==
+                            QStringLiteral("0")) return;
+                    QRect r = resolve(w.attrs, canvas);
+                    QPoint childOrigin = origin;
+                    QSize childCanvas = canvas;
+                    if (w.tag != QStringLiteral("layout")) {
+                        childOrigin = QPoint(origin.x() + r.x(),
+                                             origin.y() + r.y());
+                    }
+                    if (r.width()  > 0) childCanvas.setWidth(r.width());
+                    if (r.height() > 0) childCanvas.setHeight(r.height());
+                    // Try children first (topmost-first).
+                    for (auto it = w.children.crbegin();
+                         it != w.children.crend(); ++it)
+                        walk(*it, childOrigin, childCanvas);
+                    if (firedAny > 0) return;
+                    if (w.id.isEmpty()) return;
+                    // Bbox at this widget's level.
+                    int width = r.width(), height = r.height();
+                    if ((width <= 0 || height <= 0)) {
+                        const QString img = w.attrs.value(
+                            QStringLiteral("image"));
+                        if (!img.isEmpty()) {
+                            const QSize is = qtampImageSize(img, &registry());
+                            if (width  <= 0) width  = is.width();
+                            if (height <= 0) height = is.height();
+                        }
+                    }
+                    if (width <= 0 || height <= 0) return;
+                    const QRect bbox(childOrigin.x(), childOrigin.y(),
+                                     width, height);
+                    if (!bbox.contains(p)) return;
+                    int fired = WasabiQt::fireWidgetEvent(
+                        w.id, L"onLeftClick");
+                    if (fired > 0) {
+                        firedAny = fired;
+                        firedId = w.id;
+                    }
+                };
+                walk(tree(), QPoint(0,0), layoutNativeSize());
+                if (firedAny > 0) {
+                    if (::getenv("WASABIQT_TRACE_MAKI"))
+                        fprintf(stderr,
+                            "[click] (%d,%d) deep hit id=%s fired=%d\n",
+                            p.x(), p.y(),
+                            firedId.toLocal8Bit().constData(), firedAny);
+                    update();
+                    return;
                 }
             }
             if (hit2) {
@@ -709,6 +805,13 @@ protected:
                 }
             }
             // Empty-area click — start a window drag.
+            if (::getenv("WASABIQT_TRACE_MAKI"))
+                fprintf(stderr,
+                    "[click] (%d,%d) falling through to window drag "
+                    "(hit=%s hit2=%s)\n",
+                    p.x(), p.y(),
+                    hit ? hit->id.toLocal8Bit().constData() : "(null)",
+                    hit2 ? hit2->id.toLocal8Bit().constData() : "(null)");
             if (windowHandle() && windowHandle()->startSystemMove())
                 return;
             m_dragOrigin = e->globalPosition().toPoint() -
@@ -1553,6 +1656,37 @@ int main(int argc, char *argv[]) {
       // defined button handlers (drawer toggles, mute, etc.)
       // without an actual click event.  Comma-separated lets us
       // chain multiple actions.
+      // WASABIQT_CLICK_AT="x,y;x,y" — synthesise full Qt QMouseEvent
+      // press+release at the given coords so the click path runs
+      // through mousePressEvent (hit-test, fireWidgetEvent, drag
+      // fallthrough).  Lets us verify the full click pipeline in
+      // offscreen tests instead of bypassing it with WASABIQT_FIRE_CLICK.
+      if (const char *c = ::getenv("WASABIQT_CLICK_AT")) {
+        const QString s = QString::fromLocal8Bit(c);
+        const QStringList pts = s.split(';', Qt::SkipEmptyParts);
+        int delay = 50;
+        for (const QString &pt : pts) {
+            const QStringList xy = pt.split(',');
+            if (xy.size() != 2) continue;
+            const int px = xy[0].toInt();
+            const int py = xy[1].toInt();
+            QTimer::singleShot(delay, view, [view, px, py]() {
+                fprintf(stderr, "qtamp: synth click at (%d,%d)\n", px, py);
+                const QPointF pos(px, py);
+                QMouseEvent down(QEvent::MouseButtonPress, pos, pos,
+                    pos, Qt::LeftButton, Qt::LeftButton,
+                    Qt::NoModifier);
+                QMouseEvent up(QEvent::MouseButtonRelease, pos, pos,
+                    pos, Qt::LeftButton, Qt::NoButton,
+                    Qt::NoModifier);
+                QCoreApplication::sendEvent(view, &down);
+                QCoreApplication::sendEvent(view, &up);
+                view->update();
+            });
+            delay += 200;
+        }
+        screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
+      }
 if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         const QString s = QString::fromLocal8Bit(c);
         const QStringList ids = s.split(',', Qt::SkipEmptyParts);
