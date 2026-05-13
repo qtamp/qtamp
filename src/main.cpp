@@ -1401,19 +1401,16 @@ int main(int argc, char *argv[]) {
             // sysregion cutouts land where the chrome actually
             // paints, not where the original XML put it.
             view->rebuildWindowRegion();
-            // Drawer opens by default in qtamp.  Configtabs.m's
-            // setup hides drawer.button.open in that state; since
-            // we don't run scripts on first load, do it ourselves
-            // so the two toggle buttons don't overlap on startup.
+            // Classic-skin position-bar background (setposbar
+            // visibility.maki normally toggles this on play); keep
+            // it visible so the rail is actually drawn.  The
+            // configtabs drawer-button toggle used to live here too
+            // but Maki's OpenDrawer dispatch now drives it via
+            // configtabs.maki + the qtamp DrawerOpen=1 default in
+            // privateIntStore.
             std::function<void(WasabiQt::Layout::ResolvedWidget &)> walk =
                 [&](WasabiQt::Layout::ResolvedWidget &w) {
-                if (w.id == QStringLiteral("drawer.button.open"))
-                    w.attrs.insert(QStringLiteral("visible"),
-                                   QStringLiteral("0"));
-                // Classic-skin position-bar background (setposbar
-                // visibility.maki normally toggles this on play);
-                // keep it visible so the rail is actually drawn.
-                else if (w.id == QStringLiteral("posbarbg"))
+                if (w.id == QStringLiteral("posbarbg"))
                     w.attrs.insert(QStringLiteral("visible"),
                                    QStringLiteral("1"));
                 for (auto &c : w.children) walk(c);
