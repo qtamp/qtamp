@@ -1562,7 +1562,7 @@ int main(int argc, char *argv[]) {
       // defined button handlers (drawer toggles, mute, etc.)
       // without an actual click event.  Comma-separated lets us
       // chain multiple actions.
-      if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
+if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         const QString s = QString::fromLocal8Bit(c);
         const QStringList ids = s.split(',', Qt::SkipEmptyParts);
         // Fire each click on its own timer so prior state mutations
