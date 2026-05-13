@@ -1563,16 +1563,25 @@ int main(int argc, char *argv[]) {
       // without an actual click event.  Comma-separated lets us
       // chain multiple actions.
       if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
-        screenshotDelayMs = qMax(screenshotDelayMs, 500);
         const QString s = QString::fromLocal8Bit(c);
         const QStringList ids = s.split(',', Qt::SkipEmptyParts);
-        QTimer::singleShot(50, view, [view, ids]() {
-          for (const QString &id : ids) {
-            qInfo().noquote() << "qtamp: firing onLeftClick on" << id;
-            WasabiQt::fireWidgetEvent(id, L"onLeftClick");
-          }
-          view->update();
-        });
+        // Fire each click on its own timer so prior state mutations
+        // get a paint pass before the next click runs.  Some scripts
+        // chain layout changes that don't take effect until after a
+        // repaint (e.g. close-after-open needs the open's resize to
+        // settle into the new layout root before close reads
+        // getGuiW/getGuiH).
+        int delay = 50;
+        for (const QString &id : ids) {
+            QTimer::singleShot(delay, view, [view, id]() {
+                qInfo().noquote()
+                    << "qtamp: firing onLeftClick on" << id;
+                WasabiQt::fireWidgetEvent(id, L"onLeftClick");
+                view->update();
+            });
+            delay += 200;
+        }
+        screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
       }
       QTimer::singleShot(screenshotDelayMs, view, [view, screenshotPath]() {
         QPixmap shot = view->grab();
