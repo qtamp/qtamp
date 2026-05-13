@@ -539,6 +539,20 @@ protected:
                 }
                 if (WasabiQt::dispatchAction(action, m_host, this))
                     return;
+                // Universal Maki click dispatch: when no built-in
+                // action fired, broadcast onLeftClick to any handler
+                // that bound to this widget id.  This is how skin
+                // scripts wire their own button behaviour (e.g.
+                // videoavs.m's btnOpen.onLeftClick → openDrawer())
+                // without us needing per-skin glue.
+                if (!hit->id.isEmpty()) {
+                    int fired = WasabiQt::fireWidgetEvent(
+                        hit->id, L"onLeftClick");
+                    if (fired > 0) {
+                        update();
+                        return;
+                    }
+                }
             }
             // Drawer tab switcher: the three `mousetrapTab*` layers
             // sit on top of each tab.  They don't carry `action=`
