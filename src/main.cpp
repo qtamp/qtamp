@@ -483,21 +483,15 @@ protected:
         if (e->button() == Qt::LeftButton) {
             const QPoint p = e->position().toPoint();
 
-            // Drawer toggle — handled before the regular hit-test
-            // because player.main paints (and hit-tests) on top of
-            // the drawer toggle button when the drawer is closed.
-            // The button lives at drawer-relative (-72, 118); drawer
-            // y flips between 17 (closed) and 133 (open).
-            {
-                const int btnX = layoutNativeSize().width() - 72;
-                const int btnY = m_drawerOpen ? 251 : 135;
-                const QRect toggle =
-                    QRect(btnX, btnY, 25, 7).adjusted(-3, -3, 3, 3);
-                if (toggle.contains(p)) {
-                    setDrawerOpen(!m_drawerOpen);
-                    return;
-                }
-            }
+            // (The old hardcoded drawer-toggle that intercepted clicks
+            // at the fixed drawer.button position used to live here.
+            // It bypassed Maki dispatch — clicking it ran qtamp's own
+            // setDrawerOpen which forced drawer.button.open visible=0
+            // permanently, breaking configtabs.maki's btnOpen.show()
+            // path on the next close.  Removed: clicks now fall
+            // through to the hit-test + fireWidgetEvent path so
+            // configtabs.m's btnOpen.onLeftClick / btnClose.onLeftClick
+            // handlers run normally.)
 
             QRect hitBbox;
             const auto *hit = WasabiQt::Layout::hitTest(
@@ -843,13 +837,10 @@ public:
             tree());
         WasabiQt::Layout::runKnownScripts(mutableTree,
                                           layoutNativeSize().width());
-        // Re-apply our drawer state — the fresh tree has both
-        // drawer.button.close and drawer.button.open visible by
-        // default, so without this the down-arrow paints on top of
-        // the up-arrow even though the drawer is open.
-        const bool want = m_drawerOpen;
-        m_drawerOpen = !want;
-        setDrawerOpen(want);
+        // configtabs.maki's onScriptLoaded now drives the drawer state
+        // (reads DrawerOpen from privateIntStore, fires OpenDrawer)
+        // so qtamp's own setDrawerOpen tree-mutation is no longer
+        // needed after a reload.
     }
 
 private:
