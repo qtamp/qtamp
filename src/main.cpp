@@ -1401,21 +1401,12 @@ int main(int argc, char *argv[]) {
             // sysregion cutouts land where the chrome actually
             // paints, not where the original XML put it.
             view->rebuildWindowRegion();
-            // Classic-skin position-bar background (setposbar
-            // visibility.maki normally toggles this on play); keep
-            // it visible so the rail is actually drawn.  The
-            // configtabs drawer-button toggle used to live here too
-            // but Maki's OpenDrawer dispatch now drives it via
-            // configtabs.maki + the qtamp DrawerOpen=1 default in
-            // privateIntStore.
-            std::function<void(WasabiQt::Layout::ResolvedWidget &)> walk =
-                [&](WasabiQt::Layout::ResolvedWidget &w) {
-                if (w.id == QStringLiteral("posbarbg"))
-                    w.attrs.insert(QStringLiteral("visible"),
-                                   QStringLiteral("1"));
-                for (auto &c : w.children) walk(c);
-            };
-            walk(mutableTree);
+            // (Skin-specific widget force-visibility used to live
+            // here.  Both pieces — drawer.button.open hide and
+            // posbarbg visible — are now driven by their respective
+            // Maki scripts: configtabs.maki via DrawerOpen=1 default,
+            // setposbarvisibility.maki via the wired getStatus()
+            // callback to QMediaPlayer state.)
         }
 
         // Fire the actual Maki scripts.  Errors are non-fatal — if
@@ -1426,6 +1417,16 @@ int main(int argc, char *argv[]) {
         // static well-known-script path).
         if (!::getenv("WASABIQT_NO_RUNTIME")) {
             static WasabiQt::SkinRuntime runtime;
+            // Route Maki getStatus() through to the live QMediaPlayer
+            // state so playback-state-driven scripts (setposbarvisibility.
+            // maki, classicplaystatus.maki, drawer.m) see the real
+            // host status instead of a hardcoded default.
+            WasabiQt::registerSkinPlaybackStatusCallback(
+                [h = host]() -> int {
+                    if (h->isPlaying()) return 1;
+                    if (h->isPaused())  return -1;
+                    return 0;
+                });
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
             runtime.dispatchXuiParams(mutableTree);
