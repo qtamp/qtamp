@@ -294,6 +294,9 @@ public:
     // ── Window control — implemented via the bound window.
     bool close()    override;
     bool minimize() override;
+    bool maximize() override;
+    bool toggleShade() override;
+    bool showSystemMenu(QWidget *embedder = nullptr) override;
 
 private:
     void onAudioBuffer(const QAudioBuffer &buf) {
@@ -354,6 +357,9 @@ private:
     int           m_lastChannels   = 0;
     int           m_lastSampleRate = 0;
     QtampPlayerWindow *m_window = nullptr;
+    // Cached height before entering shade mode so we can restore on
+    // the next SWITCH toggle.  0 = not currently shaded.
+    int           m_savedHeight    = 0;
 };
 
 // Player-window wrapper around qtWasabi's SkinView.  Modern skins
@@ -951,7 +957,11 @@ private:
     // About, Exit, Colour Theme) are fully wired; the remainder are
     // present so the menu tree is identical to upstream and they
     // light up as those subsystems land.
-    void showContextMenu(QPoint globalPos) {
+    // Q_INVOKABLE so the SYSMENU action (via Host::showSystemMenu)
+    // can pop this same menu from a non-mouse path via
+    // QMetaObject::invokeMethod("showContextMenu", Q_ARG(QPoint, ...)).
+public:
+    Q_INVOKABLE void showContextMenu(QPoint globalPos) {
         static const char *menuStyle =
             "QMenu { background-color: #2b2d3d; color: #00ff00; border: 1px solid #555; font-size: 9pt; }"
             "QMenu::item:selected { background-color: #0000c6; }"
@@ -1373,6 +1383,52 @@ inline bool QtampHost::close() {
 inline bool QtampHost::minimize() {
     if (m_window) m_window->showMinimized();
     return m_window != nullptr;
+}
+
+inline bool QtampHost::maximize() {
+    if (!m_window) return false;
+    if (m_window->isMaximized()) m_window->showNormal();
+    else                          m_window->showMaximized();
+    return true;
+}
+
+inline bool QtampHost::toggleShade() {
+    // "Shade" mode collapses the player to a thin strip — Winamp's
+    // titlebar middle button.  Modern skins normally swap to the
+    // `<container id="main"><layout id="shade">...</layout>` layout,
+    // but our window currently hosts only the "normal" layout.  For
+    // now, toggle between the painted-extent-only height (drawer
+    // hidden) and a 30-px-tall preview by manipulating the layout
+    // root's height.  Falls back to a no-op-true so the click is
+    // consumed.  TODO: switch to the actual shade layout when the
+    // SkinDoc carries one.
+    if (!m_window) return true;
+    const int curH = m_window->height();
+    const int shadeH = 30;
+    if (curH > shadeH + 16) {
+        m_savedHeight = curH;
+        m_window->resize(m_window->width(), shadeH);
+    } else if (m_savedHeight > 0) {
+        m_window->resize(m_window->width(), m_savedHeight);
+        m_savedHeight = 0;
+    }
+    return true;
+}
+
+inline bool QtampHost::showSystemMenu(QWidget *embedder) {
+    // Route SYSMENU action to the same right-click context menu the
+    // window already builds.  Synthesise a right-click QContextMenu
+    // event at the embedder's current cursor position so the existing
+    // showContextMenu path runs.  Done via QMetaObject::invokeMethod
+    // so we don't have to expose showContextMenu publicly.
+    QWidget *target = embedder ? embedder
+                               : static_cast<QWidget *>(m_window);
+    if (!target) return true;
+    const QPoint pos = QCursor::pos();
+    QMetaObject::invokeMethod(target, "showContextMenu",
+                               Qt::QueuedConnection,
+                               Q_ARG(QPoint, pos));
+    return true;
 }
 
 // Q_OBJECT classes defined inline need their MOC output included
