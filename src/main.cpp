@@ -32,7 +32,9 @@
 #  include <WasabiQt/Layout.h>
 #  include <WasabiQt/BitmapRegistry.h>
 #  include <WasabiQt/Host.h>
+#  include <WasabiQt/PaintCtx.h>
 #  include <WasabiQt/TreePainter.h>
+#  include <WasabiQt/Widget.h>
 #  include <QAudioBuffer>
 #  include <QAudioBufferOutput>
 #  include <QAudioOutput>
@@ -695,6 +697,21 @@ protected:
             const WasabiQt::Layout::ResolvedWidget *hit2 = nullptr;
             for (const auto *w : hits) {
                 if (!w || w->id.isEmpty()) continue;
+                // Compiled widget behaviours first — real Wasabi has
+                // built-in onLeftButtonDown handlers (Menu's hover/
+                // down state swap, Slider drag init, ScrollBar thumb
+                // grab) that take precedence over Maki onLeftClick.
+                // Dispatch through the Widget virtual; if it claims
+                // the click we remember the widget so mouseRelease
+                // can route the corresponding onLeftButtonUp.
+                if (w->tag == QLatin1String("menu")) {
+                    auto *mw = const_cast<WasabiQt::Widget *>(w);
+                    WasabiQt::PaintCtx mctx{};
+                    mw->onLeftButtonDown(p, mctx);
+                    m_activeWidget = mw;
+                    update();
+                    return;
+                }
                 int fired = WasabiQt::fireWidgetEvent(
                     w->id, L"onLeftClick");
                 if (::getenv("WASABIQT_TRACE_MAKI"))
@@ -892,6 +909,13 @@ protected:
         m_dragging = false;
         m_ctDragging = false;
         m_sliderAction.clear();
+        if (m_activeWidget && e->button() == Qt::LeftButton) {
+            WasabiQt::PaintCtx mctx{};
+            m_activeWidget->onLeftButtonUp(
+                e->position().toPoint(), mctx);
+            m_activeWidget = nullptr;
+            update();
+        }
         WasabiQt::SkinQuickItem::mouseReleaseEvent(e);
     }
     void keyPressEvent(QKeyEvent *e) override {
@@ -1470,6 +1494,11 @@ public:
     bool       m_dragging = false;
     QString    m_sliderAction;     // empty when not dragging a slider
     QRect      m_sliderTrack;
+    // Widget currently holding the left mouse button — receives
+    // onLeftButtonUp / onMouseMove until release.  Used by widgets
+    // with compiled built-in interaction (Menu hover/down state,
+    // future Slider drag, ScrollBar thumb grab).
+    WasabiQt::Widget *m_activeWidget = nullptr;
     WasabiQt::SkinXml::Document m_doc;
     QHash<QString, WasabiQt::SkinView *> m_subwindows;
     bool m_drawerOpen = true;
