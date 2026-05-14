@@ -389,6 +389,12 @@ public:
     // from the same skin on demand.
     void setSkinDocument(WasabiQt::SkinXml::Document doc) {
         m_doc = std::move(doc);
+        // The base-class m_doc was captured by load() as a pointer
+        // into the CALLER's stack-local Document.  After we take
+        // ownership here, that base pointer dangles — re-point it
+        // at the now-member-owned copy so paint paths can keep
+        // dereferencing it safely.
+        setDocument(&m_doc);
     }
 
     // Toggle a secondary container window (EQ / Playlist / etc.).
