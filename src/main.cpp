@@ -1,6 +1,9 @@
 #include <cstdio>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDebug>
+#include <QHoverEvent>
+#include <QMouseEvent>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -2064,31 +2067,65 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         }
         screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
       }
-      // WASABIQT_FIRE_HOVER=<id>: dispatch a hover-enter directly to
-      // the named widget, so the resulting screenshot shows the
-      // widget's `hoverImage=` variant (or `downImage=` if combined
-      // with WASABIQT_FIRE_PRESS_HOLD).  Bypasses Qt's hover event
-      // pipeline since offscreen platform doesn't generate mouse
-      // motion.
+      // WASABIQT_FIRE_HOVER=<id> or =x,y: synthesize a Qt hover event
+      // at the named widget's bbox center (or the literal x,y coords)
+      // so the resulting screenshot exercises the FULL hover pipeline
+      // (Qt hoverMoveEvent -> SkinQuickItem::hoverMoveEvent ->
+      // topmostWidgetAt -> Widget::onMouseMove).  Use this to verify
+      // the real interactive path offscreen, not just the
+      // widget-virtual fast path.
+      auto fireHoverAt = [view](QPointF pos) {
+          QHoverEvent ev(QEvent::HoverMove, pos, pos, QPointF(-1, -1));
+          QCoreApplication::sendEvent(view, &ev);
+          view->update();
+      };
+      auto fireMousePressAt = [view](QPointF pos) {
+          QMouseEvent ev(QEvent::MouseButtonPress, pos, pos,
+              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+          QCoreApplication::sendEvent(view, &ev);
+          view->update();
+      };
+      auto resolveTarget = [view](const QString &spec) -> QPointF {
+          // "x,y" → literal coords; otherwise treat as widget id and
+          // look up bbox center via Layout::hitTest's collect mode.
+          if (spec.contains(',')) {
+              const auto parts = spec.split(',');
+              if (parts.size() == 2)
+                  return QPointF(parts[0].toInt(), parts[1].toInt());
+          }
+          auto *w = WasabiQt::Widget::findById(spec);
+          if (!w) return QPointF(-1, -1);
+          // Find absolute bbox by re-walking the tree in collect mode.
+          // Easier: use the topmostWidgetAt by stepping through the
+          // canvas — but cheaper: ask the widget for its rect via
+          // resolveRect (parent-local) and then walk parents.  Cheapest
+          // of all: scan a small grid for the widget id.
+          const QSize sz = view->size().toSize();
+          for (int y = 0; y < sz.height(); y += 2) {
+              for (int x = 0; x < sz.width(); x += 2) {
+                  if (view->topmostWidgetAt(QPoint(x, y), false) == w)
+                      return QPointF(x, y);
+              }
+          }
+          return QPointF(-1, -1);
+      };
       if (const char *c = ::getenv("WASABIQT_FIRE_HOVER")) {
-        const QString id = QString::fromLocal8Bit(c);
-        QTimer::singleShot(50, view, [view, id]() {
-            if (auto *w = WasabiQt::Widget::findById(id)) {
-                WasabiQt::PaintCtx ctx{};
-                w->onMouseMove(QPoint(0, 0), ctx);
-                view->update();
-            }
+        const QString spec = QString::fromLocal8Bit(c);
+        QTimer::singleShot(150, view, [view, spec, fireHoverAt, resolveTarget]() {
+            const QPointF pos = resolveTarget(spec);
+            fprintf(stderr, "qtamp: FIRE_HOVER spec=%s -> pos=(%g,%g)\n",
+                spec.toLocal8Bit().constData(), pos.x(), pos.y());
+            if (pos.x() >= 0) fireHoverAt(pos);
         });
         screenshotDelayMs = qMax(screenshotDelayMs, 800);
       }
       if (const char *c = ::getenv("WASABIQT_FIRE_PRESS_HOLD")) {
-        const QString id = QString::fromLocal8Bit(c);
-        QTimer::singleShot(50, view, [view, id]() {
-            if (auto *w = WasabiQt::Widget::findById(id)) {
-                WasabiQt::PaintCtx ctx{};
-                w->onLeftButtonDown(QPoint(0, 0), ctx);
-                view->update();
-            }
+        const QString spec = QString::fromLocal8Bit(c);
+        QTimer::singleShot(150, view, [view, spec, fireMousePressAt, resolveTarget]() {
+            const QPointF pos = resolveTarget(spec);
+            fprintf(stderr, "qtamp: FIRE_PRESS_HOLD spec=%s -> pos=(%g,%g)\n",
+                spec.toLocal8Bit().constData(), pos.x(), pos.y());
+            if (pos.x() >= 0) fireMousePressAt(pos);
         });
         screenshotDelayMs = qMax(screenshotDelayMs, 800);
       }
