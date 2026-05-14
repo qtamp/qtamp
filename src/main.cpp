@@ -2060,6 +2060,16 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
             QTimer::singleShot(delay, view, [view, id]() {
                 qInfo().noquote()
                     << "qtamp: firing onLeftClick on" << id;
+                // Dispatch both the Maki onLeftClick event AND the
+                // widget virtual chain (onLeftButtonDown +
+                // onLeftButtonUp) — togglebutton / nstatesbutton
+                // cycle their state on the latter, Maki scripts
+                // listen on the former, and a real click does both.
+                if (auto *w = WasabiQt::Widget::findById(id)) {
+                    WasabiQt::PaintCtx ctx{};
+                    w->onLeftButtonDown(QPoint(0, 0), ctx);
+                    w->onLeftButtonUp  (QPoint(0, 0), ctx);
+                }
                 WasabiQt::fireWidgetEvent(id, L"onLeftClick");
                 view->update();
             });
