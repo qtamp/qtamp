@@ -622,8 +622,11 @@ protected:
                             QStringLiteral("cb_nextpage"),
                             Qt::CaseInsensitive) == 0) ? 1 : -1;
                         sc = qBound(0, sc, maxScroll);
-                        buck->attrs.insert(QStringLiteral("_scroll"),
-                                            QString::number(sc));
+                        // Route through setXmlParam so
+                        // ComponentBucketWidget can shadow the value
+                        // on its typed state member.
+                        buck->setXmlParam(QStringLiteral("_scroll"),
+                                           QString::number(sc));
                         update();
                         return;
                     }
