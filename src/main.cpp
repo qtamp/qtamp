@@ -711,6 +711,7 @@ protected:
             // Menu is handled as a special case below — it short-
             // circuits because its onLeftButtonDown is meant to claim
             // the click entirely (popup spawn, no Maki dispatch).
+            bool buttonClaimed = false;
             for (const auto *w : hits) {
                 if (!w) continue;
                 if (w->tag == QLatin1String("button") ||
@@ -720,6 +721,7 @@ protected:
                     WasabiQt::PaintCtx bctx{};
                     bw->onLeftButtonDown(p, bctx);
                     m_activeWidget = bw;
+                    buttonClaimed = true;
                     break;
                 }
             }
@@ -891,7 +893,19 @@ protected:
                     return;
                 }
             }
-            // Empty-area click — start a window drag.
+            // Empty-area click — start a window drag.  Skip when a
+            // button widget already claimed the press: the button's
+            // mouseReleaseEvent path needs to see the matching
+            // release to fire onLeftButtonUp (and let togglebutton /
+            // nstatesbutton cycle their state).  Without this skip,
+            // clicks on auto-cycling state widgets (Repeat / Shuffle
+            // / Random — none of them have a Maki onLeftClick
+            // handler that would fire>0 above) fell through to
+            // startSystemMove and the window dragged instead.
+            if (buttonClaimed) {
+                update();
+                return;
+            }
             if (::getenv("WASABIQT_TRACE_MAKI"))
                 fprintf(stderr,
                     "[click] (%d,%d) falling through to window drag "
