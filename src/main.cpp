@@ -603,7 +603,7 @@ protected:
                                 return &w;
                         }
                         for (auto &c : w.children)
-                            if (auto *r = findBucket(c)) return r;
+                            if (c) if (auto *r = findBucket(*c)) return r;
                         return nullptr;
                     };
                     auto *buck = findBucket(mut);
@@ -1413,7 +1413,7 @@ public:
                 w.attrs.insert(QStringLiteral("visible"),
                     QStringLiteral("0"));
             }
-            for (auto &c : w.children) walk(c);
+            for (auto &c : w.children) if (c) walk(*c);
         };
         walk(mut);
         // Shrink the window when the drawer is closed so the chrome
@@ -1457,7 +1457,7 @@ public:
             else if (w.id == QStringLiteral("player.normal.drawer.eq"))           w.attrs.insert("visible", onEQ);
             else if (w.id == QStringLiteral("player.normal.drawer.options"))      w.attrs.insert("visible", onOPT);
             else if (w.id == QStringLiteral("player.normal.drawer.colorthemes"))  w.attrs.insert("visible", onCT);
-            for (auto &c : w.children) walk(c);
+            for (auto &c : w.children) if (c) walk(*c);
         };
         walk(mut);
     }
