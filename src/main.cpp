@@ -485,7 +485,13 @@ protected:
     // into a transparent QImage buffer that gets uploaded as a
     // QSGSimpleTextureNode.
     void paintInto(QPainter *p, const QSize &canvas) override {
-        if (!windowRegion().isEmpty()) p->setClipRegion(windowRegion());
+        // Do NOT clip the chrome paint to the window region.  The
+        // user explicitly wants the chrome bitmap painted fully
+        // (rectangular) — the rounded corners come from setMask on
+        // the QQuickWindow shaping the OS-level surface, not from
+        // alpha-zero pixels in the QImage (Wayfire renders those as
+        // white instead of desktop-transparent, producing the
+        // staircase-of-white visual the user has been calling out).
         m_ctListRect = QRect();
         WasabiQt::TreePainter::paintTree(
             p, tree(), registry(), fonts(),
@@ -558,6 +564,105 @@ protected:
                 // dialogs; QQuickItem isn't a QWidget so pass nullptr.
                 if (WasabiQt::dispatchAction(action, m_host, nullptr))
                     return;
+                // `action="X" action_target="Y"` — Wasabi's action-
+                // dispatch protocol.  Scripts that own widget Y
+                // implement `Y.onAction(action, param, x, y, p1, p2,
+                // source)` and pivot on the action string (e.g.
+                // configtarget.m's `target.onAction("switchto;…")`
+                // swapping option pages).  Without this dispatch the
+                // option-bucket buttons fire onLeftClick on themselves
+                // but nothing happens because the actual logic lives
+                // on the target widget.
+                // `action="cb_prevpage|cb_nextpage" cbtarget="..."` —
+                // componentbucket scroll arrows.  Look up the bucket
+                // (we pick the only componentbucket in the parent
+                // chain, since the `cbtarget="bucket"` alias doesn't
+                // necessarily match the bucket's actual id) and bump
+                // its `_scroll` attr.  TreePainter then translates the
+                // bucket's children by -scroll * entry_step on each
+                // paint so a different window of entries becomes visible.
+                if (action.compare(QStringLiteral("cb_prevpage"),
+                                   Qt::CaseInsensitive) == 0 ||
+                    action.compare(QStringLiteral("cb_nextpage"),
+                                   Qt::CaseInsensitive) == 0) {
+                    const QString cbtarget = hit->attrs.value(
+                        QStringLiteral("cbtarget"));
+                    auto &mut = const_cast<WasabiQt::Layout::ResolvedWidget &>(
+                        tree());
+                    std::function<WasabiQt::Layout::ResolvedWidget *(
+                        WasabiQt::Layout::ResolvedWidget &)> findBucket =
+                        [&](WasabiQt::Layout::ResolvedWidget &w)
+                              -> WasabiQt::Layout::ResolvedWidget * {
+                        if (w.tag == QStringLiteral("componentbucket")) {
+                            if (cbtarget.isEmpty() ||
+                                w.id.compare(cbtarget,
+                                              Qt::CaseInsensitive) == 0 ||
+                                w.id.endsWith(
+                                    QChar('.') + cbtarget,
+                                    Qt::CaseInsensitive))
+                                return &w;
+                        }
+                        for (auto &c : w.children)
+                            if (auto *r = findBucket(c)) return r;
+                        return nullptr;
+                    };
+                    auto *buck = findBucket(mut);
+                    if (buck) {
+                        int sc = buck->attrs.value(
+                            QStringLiteral("_scroll")).toInt();
+                        const int cnt = buck->attrs.value(
+                            QStringLiteral("_entry_count")).toInt();
+                        // Page size derived from bucket.h / entry_step:
+                        const int step = qMax(1, buck->attrs.value(
+                            QStringLiteral("_entry_step")).toInt());
+                        const int viewport = buck->attrs.value(
+                            QStringLiteral("h")).toInt() / step;
+                        const int maxScroll = qMax(0, cnt - viewport);
+                        sc += (action.compare(
+                            QStringLiteral("cb_nextpage"),
+                            Qt::CaseInsensitive) == 0) ? 1 : -1;
+                        sc = qBound(0, sc, maxScroll);
+                        buck->attrs.insert(QStringLiteral("_scroll"),
+                                            QString::number(sc));
+                        update();
+                        return;
+                    }
+                }
+                if (!action.isEmpty()) {
+                    const QString target = hit->attrs.value(
+                        QStringLiteral("action_target"));
+                    if (!target.isEmpty()) {
+                        // Handle the universal switchto;GROUPID
+                        // protocol directly so the option pages work
+                        // regardless of whether the script-side
+                        // onAction dispatch reads its args correctly.
+                        // Wasabi's contract is the same in real
+                        // Winamp: a button with
+                        // action="switchto;<groupdef-id>" populates
+                        // its action_target widget with that groupdef.
+                        if (action.startsWith(
+                                QStringLiteral("switchto;"),
+                                Qt::CaseInsensitive)) {
+                            const QString grp =
+                                action.section(QChar(';'), 1, 1);
+                            if (!grp.isEmpty()) {
+                                WasabiQt::fireWidgetAttrSet(
+                                    target, QStringLiteral("groupid"), grp);
+                                update();
+                                return;
+                            }
+                        }
+                        const QString param = hit->attrs.value(
+                            QStringLiteral("param"));
+                        int fired = WasabiQt::fireWidgetActionEvent(
+                            target, action, param,
+                            p.x(), p.y(), 0, 0, hit->id);
+                        if (fired > 0) {
+                            update();
+                            return;
+                        }
+                    }
+                }
                 // Universal Maki click dispatch: when no built-in
                 // action fired, broadcast onLeftClick to any handler
                 // that bound to this widget id.  This is how skin
@@ -1640,6 +1745,19 @@ int main(int argc, char *argv[]) {
     view->setParentItem(qwin->contentItem());
     view->setSize(QSizeF(view->layoutNativeSize()));
     qwin->resize(view->layoutNativeSize());
+    // Force the QQuickWindow's wl_surface to use an alpha buffer.
+    // Wayfire/Asahi composites alpha=0 pixels correctly ONLY when
+    // the surface was created with an ARGB visual; the default
+    // RGB(no-alpha) path renders cleared pixels as opaque white.
+    // QSurfaceFormat::setDefaultFormat in main() sets the default
+    // but QQuickWindow ignores defaults if it's created with
+    // QQmlApplicationEngine — so set it explicitly here.
+    {
+        QSurfaceFormat fmt = qwin->format();
+        fmt.setAlphaBufferSize(8);
+        qwin->setFormat(fmt);
+    }
+    qwin->setColor(QColor(0, 0, 0, 0));
     host->bindWindow(view);
 
     // Drive the chrome.  Two paths:
@@ -1703,7 +1821,11 @@ int main(int argc, char *argv[]) {
                     if (::getenv("WASABIQT_NO_ANIM"))
                         view->resizeLayoutTo(QSize(w, h));
                     else
-                        view->animatedResizeLayoutTo(QSize(w, h), 200);
+                        // 350 ms matches the widget-level setTarget
+                        // tween (configtabs.m's drawer slide) so the
+                        // config drawer + the video/vis drawer feel
+                        // consistent.
+                        view->animatedResizeLayoutTo(QSize(w, h), 350);
                 });
             runtime.loadScripts(doc, mutableTree);
             runtime.dispatchOnScriptLoaded();
