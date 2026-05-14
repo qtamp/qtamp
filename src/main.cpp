@@ -692,6 +692,26 @@ protected:
                 alphaHitTestList(p, /*actionOnly=*/false,
                                   qtampImageSize, &registry());
             const WasabiQt::Layout::ResolvedWidget *hit2 = nullptr;
+            // For button-family widgets, fire onLeftButtonDown on the
+            // topmost interactive hit BEFORE Maki dispatch so the
+            // pressed-state bitmap shows immediately.  The widget is
+            // remembered in m_activeWidget so mouseReleaseEvent can
+            // route the matching onLeftButtonUp (clearing m_pressed).
+            // Menu is handled as a special case below — it short-
+            // circuits because its onLeftButtonDown is meant to claim
+            // the click entirely (popup spawn, no Maki dispatch).
+            for (const auto *w : hits) {
+                if (!w) continue;
+                if (w->tag == QLatin1String("button") ||
+                    w->tag == QLatin1String("togglebutton") ||
+                    w->tag == QLatin1String("nstatesbutton")) {
+                    auto *bw = const_cast<WasabiQt::Widget *>(w);
+                    WasabiQt::PaintCtx bctx{};
+                    bw->onLeftButtonDown(p, bctx);
+                    m_activeWidget = bw;
+                    break;
+                }
+            }
             for (const auto *w : hits) {
                 if (!w || w->id.isEmpty()) continue;
                 // Compiled widget behaviours first — real Wasabi has
@@ -2043,6 +2063,34 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
             delay += 200;
         }
         screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
+      }
+      // WASABIQT_FIRE_HOVER=<id>: dispatch a hover-enter directly to
+      // the named widget, so the resulting screenshot shows the
+      // widget's `hoverImage=` variant (or `downImage=` if combined
+      // with WASABIQT_FIRE_PRESS_HOLD).  Bypasses Qt's hover event
+      // pipeline since offscreen platform doesn't generate mouse
+      // motion.
+      if (const char *c = ::getenv("WASABIQT_FIRE_HOVER")) {
+        const QString id = QString::fromLocal8Bit(c);
+        QTimer::singleShot(50, view, [view, id]() {
+            if (auto *w = WasabiQt::Widget::findById(id)) {
+                WasabiQt::PaintCtx ctx{};
+                w->onMouseMove(QPoint(0, 0), ctx);
+                view->update();
+            }
+        });
+        screenshotDelayMs = qMax(screenshotDelayMs, 800);
+      }
+      if (const char *c = ::getenv("WASABIQT_FIRE_PRESS_HOLD")) {
+        const QString id = QString::fromLocal8Bit(c);
+        QTimer::singleShot(50, view, [view, id]() {
+            if (auto *w = WasabiQt::Widget::findById(id)) {
+                WasabiQt::PaintCtx ctx{};
+                w->onLeftButtonDown(QPoint(0, 0), ctx);
+                view->update();
+            }
+        });
+        screenshotDelayMs = qMax(screenshotDelayMs, 800);
       }
       QTimer::singleShot(screenshotDelayMs, view, [view, qwin, screenshotPath]() {
         // QQuickWindow::grabWindow returns the rendered QImage from
