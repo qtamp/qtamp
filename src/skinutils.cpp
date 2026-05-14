@@ -1,4 +1,9 @@
 #include "skinutils.h"
+
+#include <QAudioBuffer>
+#include <QAudioFormat>
+
+#include <algorithm>
 #include <cmath>
 
 // Global skin playlist colors
@@ -180,6 +185,97 @@ void fft512(const float *input, float *magnitudes) {
     for (int i = 0; i < N / 2; i++) {
         magnitudes[i] = sqrtf(re[i] * re[i] + im[i] * im[i]);
     }
+}
+
+void AudioAnalyzer::reset() {
+    std::fill(std::begin(m_spectrum), std::end(m_spectrum), 0.0f);
+    std::fill(std::begin(m_osc),      std::end(m_osc),      0.0f);
+    m_vuL = m_vuR = 0.0f;
+    m_level = 0.0;
+}
+
+void AudioAnalyzer::feed(const QAudioBuffer &buffer) {
+    if (!buffer.isValid() || buffer.frameCount() <= 0) return;
+    const QAudioFormat fmt = buffer.format();
+    const int frames = buffer.frameCount();
+    const int channels = fmt.channelCount();
+    if (frames <= 0 || channels <= 0) return;
+
+    // Sample fetcher: returns the left-channel sample at frame i,
+    // normalised to [-1, 1].
+    auto leftAt = [&](int i) -> float {
+        switch (fmt.sampleFormat()) {
+        case QAudioFormat::Int16:
+            return buffer.constData<qint16>()[i * channels] / 32768.0f;
+        case QAudioFormat::Float:
+            return buffer.constData<float>()[i * channels];
+        case QAudioFormat::Int32:
+            return buffer.constData<qint32>()[i * channels] /
+                   2147483648.0f;
+        case QAudioFormat::UInt8:
+            return (int(buffer.constData<quint8>()[i * channels]) - 128) /
+                   128.0f;
+        default: return 0.0f;
+        }
+    };
+    auto rightAt = [&](int i) -> float {
+        if (channels < 2) return leftAt(i);
+        switch (fmt.sampleFormat()) {
+        case QAudioFormat::Int16:
+            return buffer.constData<qint16>()[i * channels + 1] / 32768.0f;
+        case QAudioFormat::Float:
+            return buffer.constData<float>()[i * channels + 1];
+        case QAudioFormat::Int32:
+            return buffer.constData<qint32>()[i * channels + 1] /
+                   2147483648.0f;
+        case QAudioFormat::UInt8:
+            return (int(buffer.constData<quint8>()[i * channels + 1]) - 128) /
+                   128.0f;
+        default: return 0.0f;
+        }
+    };
+
+    // Oscilloscope — first 75 samples of the left channel.
+    for (int i = 0; i < kOscSamples && i < frames; ++i)
+        m_osc[i] = leftAt(i);
+
+    // Spectrum — FFT over the first 512 left-channel samples,
+    // then bin the magnitudes into 19 log-scaled bands.
+    float fftIn[512] = {0};
+    const int n = qMin(frames, 512);
+    for (int i = 0; i < n; ++i) fftIn[i] = leftAt(i);
+    float magnitudes[256];
+    fft512(fftIn, magnitudes);
+    for (int i = 0; i < kSpectrumBands; ++i) {
+        const int startBin = i * 8 + 1;
+        const int endBin   = qMin(startBin + 8, 256);
+        float maxVal = 0.0f;
+        for (int j = startBin; j < endBin; ++j)
+            if (magnitudes[j] > maxVal) maxVal = magnitudes[j];
+        float db = 0.0f;
+        if (maxVal > 0.001f)
+            db = log10f(1.0f + maxVal * 5.0f) /
+                 log10f(1.0f + 5.0f * 50.0f);
+        m_spectrum[i] = qBound(0.0f, db, 1.0f);
+    }
+
+    // VU — RMS per channel * 3 (same scaling as winampwindow).
+    float lSum = 0.0f, rSum = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        const float l = leftAt(i);
+        const float r = rightAt(i);
+        lSum += l * l;
+        rSum += r * r;
+    }
+    m_vuL = qBound(0.0f, sqrtf(lSum / qMax(1, n)) * 3.0f, 1.0f);
+    m_vuR = qBound(0.0f, sqrtf(rSum / qMax(1, n)) * 3.0f, 1.0f);
+
+    // Smoothed RMS level — asymmetric attack/decay so chrome-side
+    // consumers (audioLevel()) see a snappy rise + gradual fall.
+    const double rms = std::sqrt((double(lSum) + double(rSum)) /
+                                 qMax(1, n * 2));
+    const double alpha = (rms > m_level) ? 0.5 : 0.15;
+    m_level = m_level * (1.0 - alpha) + rms * alpha;
 }
 
 QPoint getTextCharPos(QChar ch) {

@@ -292,8 +292,14 @@ public:
     QUrl pickFile(QWidget *embedder) override;
 
     // ── Visualisation: smoothed RMS of the most recent audio
-    //    buffer in [0..1].
-    double audioLevel() const override { return m_audioLevel; }
+    //    buffer in [0..1] (level scalar), plus the 19-band spectrum,
+    //    75-sample oscilloscope, and L/R VU peaks computed by the
+    //    shared AudioAnalyzer.
+    double audioLevel() const override { return m_analyzer.level(); }
+    const float *spectrumData() const override { return m_analyzer.spectrum(); }
+    const float *oscData()      const override { return m_analyzer.osc(); }
+    float vuLeft()  const override { return m_analyzer.vuLeft();  }
+    float vuRight() const override { return m_analyzer.vuRight(); }
 
     // ── Window control — implemented via the bound window.
     bool close()    override;
@@ -305,59 +311,15 @@ public:
 private:
     void onAudioBuffer(const QAudioBuffer &buf) {
         if (!buf.isValid() || buf.frameCount() <= 0) return;
-        const QAudioFormat fmt = buf.format();
-        const int frames = buf.frameCount();
-        const int channels = fmt.channelCount();
-        const int total = frames * channels;
-        if (total <= 0 || channels <= 0) return;
-        m_lastChannels   = channels;
-        m_lastSampleRate = fmt.sampleRate();
-
-        double sumSq = 0.0;
-        switch (fmt.sampleFormat()) {
-        case QAudioFormat::Float: {
-            const float *d = buf.constData<float>();
-            for (int i = 0; i < total; ++i)
-                sumSq += double(d[i]) * d[i];
-            break;
-        }
-        case QAudioFormat::Int16: {
-            const qint16 *d = buf.constData<qint16>();
-            for (int i = 0; i < total; ++i) {
-                const double v = d[i] / 32768.0;
-                sumSq += v * v;
-            }
-            break;
-        }
-        case QAudioFormat::Int32: {
-            const qint32 *d = buf.constData<qint32>();
-            for (int i = 0; i < total; ++i) {
-                const double v = d[i] / 2147483648.0;
-                sumSq += v * v;
-            }
-            break;
-        }
-        case QAudioFormat::UInt8: {
-            const quint8 *d = buf.constData<quint8>();
-            for (int i = 0; i < total; ++i) {
-                const double v = (int(d[i]) - 128) / 128.0;
-                sumSq += v * v;
-            }
-            break;
-        }
-        default: return;
-        }
-        const double rms = std::sqrt(sumSq / total);
-        // Asymmetric smoothing — fast attack, slower decay so the
-        // bars peak quickly with the audio and fall back gradually.
-        const double alpha = (rms > m_audioLevel) ? 0.5 : 0.15;
-        m_audioLevel = m_audioLevel * (1.0 - alpha) + rms * alpha;
+        m_lastChannels   = buf.format().channelCount();
+        m_lastSampleRate = buf.format().sampleRate();
+        m_analyzer.feed(buf);
     }
 
     QMediaPlayer  m_player;
     QAudioOutput  m_audio;
     QAudioBufferOutput m_bufOut;
-    double        m_audioLevel = 0.0;
+    AudioAnalyzer m_analyzer;
     int           m_lastChannels   = 0;
     int           m_lastSampleRate = 0;
     QtampPlayerWindow *m_window = nullptr;
@@ -442,11 +404,20 @@ public:
         // display strings AND <slider> thumb positions from it.
         setHost(host);
 
-        // 200ms repaint cadence so the time text ticks visibly while
-        // playback is running.  QQuickItem::update queues a node
-        // update on the scene graph.
+        // Load persisted visualization mode (0=off, 1=spectrum,
+        // 2=oscilloscope, 3=VU).  Default to spectrum analyzer.
+        {
+            QSettings s(configPath(), QSettings::IniFormat);
+            m_visMode = s.value("visualization/mode", 1).toInt();
+        }
+
+        // 50 ms repaint cadence (20 fps) — fast enough for the
+        // FFT-driven spectrum bars to animate fluidly, slow enough
+        // that the QSGSimpleTextureNode re-upload doesn't dominate
+        // CPU when the visualizer is off.  QQuickItem::update queues
+        // a node update on the scene graph.
         auto *tick = new QTimer(this);
-        tick->setInterval(200);
+        tick->setInterval(50);
         connect(tick, &QTimer::timeout, this,
                 qOverload<>(&QQuickItem::update));
         tick->start();
@@ -465,9 +436,15 @@ public:
     }
 
     // ── Visualisation mode (app-level) ────────────────────────
+    //    0 = off, 1 = spectrum analyzer, 2 = oscilloscope,
+    //    3 = VU meter.  Driven by the context-menu visualization
+    //    submenu AND the Preferences dialog; persisted to
+    //    QSettings("visualization/mode").
     int  visMode() const { return m_visMode; }
     void setVisMode(int m) {
-        m_visMode = m;
+        m_visMode = qBound(0, m, 3);
+        QSettings s(configPath(), QSettings::IniFormat);
+        s.setValue("visualization/mode", m_visMode);
         update();
     }
 
@@ -1340,6 +1317,11 @@ public:
                         QApplication::applicationFilePath(), {});
                     QApplication::quit();
                 }
+            });
+            connect(prefs, &PreferencesDialog::settingChanged,
+                    this, [this](const QString &key, const QVariant &v){
+                if (key == QStringLiteral("visMode"))
+                    setVisMode(v.toInt());
             });
             prefs->setAttribute(Qt::WA_DeleteOnClose);
             prefs->exec();

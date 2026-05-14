@@ -9,6 +9,8 @@
 #include <QSizePolicy>
 #include <QSpacerItem>
 #include <QSet>
+#include <QSettings>
+#include <QRadioButton>
 #include <cmath>
 #include <cstdlib>
 
@@ -1059,6 +1061,37 @@ QWidget *PreferencesDialog::createVisualizationPage()
     QVBoxLayout *layout = new QVBoxLayout(page);
     layout->addWidget(new QLabel("<b>Visualization Settings</b>"));
     layout->addSpacing(10);
+
+    // Mode picker — drives QSettings("visualization/mode") read by
+    // QtampPlayerWindow.  Same options as the right-click context
+    // menu's "Visualization" submenu.
+    {
+        QSettings s(configPath(), QSettings::IniFormat);
+        const int curMode = s.value("visualization/mode", 1).toInt();
+        QGroupBox *modeGroup = new QGroupBox("Mode", page);
+        QVBoxLayout *modeLayout = new QVBoxLayout(modeGroup);
+        QRadioButton *off  = new QRadioButton("Off", modeGroup);
+        QRadioButton *spec = new QRadioButton("Spectrum analyzer", modeGroup);
+        QRadioButton *osc  = new QRadioButton("Oscilloscope", modeGroup);
+        QRadioButton *vu   = new QRadioButton("VU meter", modeGroup);
+        off ->setChecked(curMode == 0);
+        spec->setChecked(curMode == 1);
+        osc ->setChecked(curMode == 2);
+        vu  ->setChecked(curMode == 3);
+        modeLayout->addWidget(off);
+        modeLayout->addWidget(spec);
+        modeLayout->addWidget(osc);
+        modeLayout->addWidget(vu);
+        layout->addWidget(modeGroup);
+        connect(off,  &QRadioButton::toggled, this,
+            [this](bool v) { if (v) emit settingChanged("visMode", 0); });
+        connect(spec, &QRadioButton::toggled, this,
+            [this](bool v) { if (v) emit settingChanged("visMode", 1); });
+        connect(osc,  &QRadioButton::toggled, this,
+            [this](bool v) { if (v) emit settingChanged("visMode", 2); });
+        connect(vu,   &QRadioButton::toggled, this,
+            [this](bool v) { if (v) emit settingChanged("visMode", 3); });
+    }
 
     QGroupBox *saGroup = new QGroupBox("Spectrum Analyzer", page);
     QVBoxLayout *saLayout = new QVBoxLayout(saGroup);
