@@ -606,6 +606,9 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent)
         "QCheckBox { color: #00ff00; }"
         "QCheckBox::indicator { border: 1px solid #555; background: #000; width: 12px; height: 12px; }"
         "QCheckBox::indicator:checked { background: #00ff00; }"
+        "QRadioButton { color: #00ff00; }"
+        "QRadioButton::indicator { border: 1px solid #555; background: #000; width: 12px; height: 12px; border-radius: 7px; }"
+        "QRadioButton::indicator:checked { background: #00ff00; }"
         "QGroupBox { border: 1px solid #555; color: #00ff00; margin-top: 8px; padding-top: 10px; }"
         "QGroupBox::title { subcontrol-origin: margin; left: 10px; }"
         "QSpinBox, QComboBox, QLineEdit { background-color: #000; color: #00ff00; border: 1px solid #555; padding: 2px; }"
@@ -1096,11 +1099,21 @@ QWidget *PreferencesDialog::createVisualizationPage()
     QGroupBox *saGroup = new QGroupBox("Spectrum Analyzer", page);
     QVBoxLayout *saLayout = new QVBoxLayout(saGroup);
 
+    // Load persisted spectrum-analyzer prefs so the UI reflects
+    // what's actually in effect.
+    QSettings saSettings(configPath(), QSettings::IniFormat);
+    const int  savedFalloff      = saSettings.value(
+        "visualization/analyzerFalloff", 1).toInt();
+    const int  savedPeakFalloff  = saSettings.value(
+        "visualization/peakFalloff",     1).toInt();
+    const bool savedShowPeaks    = saSettings.value(
+        "visualization/peaks",           true).toBool();
+
     QHBoxLayout *falloffRow = new QHBoxLayout();
     falloffRow->addWidget(new QLabel("Analyzer falloff speed:"));
     QComboBox *falloffCombo = new QComboBox(page);
     falloffCombo->addItems({"Slow", "Medium", "Fast", "Fastest"});
-    falloffCombo->setCurrentIndex(1);
+    falloffCombo->setCurrentIndex(savedFalloff);
     falloffRow->addWidget(falloffCombo);
     saLayout->addLayout(falloffRow);
 
@@ -1108,22 +1121,34 @@ QWidget *PreferencesDialog::createVisualizationPage()
     peakRow->addWidget(new QLabel("Peak falloff speed:"));
     QComboBox *peakCombo = new QComboBox(page);
     peakCombo->addItems({"Slow", "Medium", "Fast", "Fastest"});
-    peakCombo->setCurrentIndex(1);
+    peakCombo->setCurrentIndex(savedPeakFalloff);
     peakRow->addWidget(peakCombo);
     saLayout->addLayout(peakRow);
 
     QCheckBox *peaksCheck = new QCheckBox("Show peak dots", page);
-    peaksCheck->setChecked(true);
+    peaksCheck->setChecked(savedShowPeaks);
     saLayout->addWidget(peaksCheck);
 
     layout->addWidget(saGroup);
 
     connect(falloffCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-        [this](int idx) { emit settingChanged("saFalloff", idx); });
+        [this](int idx) {
+            QSettings s(configPath(), QSettings::IniFormat);
+            s.setValue("visualization/analyzerFalloff", idx);
+            emit settingChanged("saFalloff", idx);
+        });
     connect(peakCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-        [this](int idx) { emit settingChanged("saPeakFalloff", idx); });
+        [this](int idx) {
+            QSettings s(configPath(), QSettings::IniFormat);
+            s.setValue("visualization/peakFalloff", idx);
+            emit settingChanged("saPeakFalloff", idx);
+        });
     connect(peaksCheck, &QCheckBox::toggled, this,
-        [this](bool v) { emit settingChanged("saPeaks", v); });
+        [this](bool v) {
+            QSettings s(configPath(), QSettings::IniFormat);
+            s.setValue("visualization/peaks", v);
+            emit settingChanged("saPeaks", v);
+        });
 
     layout->addStretch();
     return page;

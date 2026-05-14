@@ -46,7 +46,13 @@ public:
     void feed(const QAudioBuffer &buffer);
     void reset();
 
+    // Peak-falloff speed.  0=Slow, 1=Medium, 2=Fast, 3=Fastest.
+    // Maps to the per-feed decay applied to m_peaks before the new
+    // spectrum samples are folded in.
+    void setPeakFalloff(int idx);
+
     const float *spectrum() const { return m_spectrum; }
+    const float *peaks()    const { return m_peaks; }
     const float *osc()      const { return m_osc; }
     float vuLeft()  const { return m_vuL; }
     float vuRight() const { return m_vuR; }
@@ -54,10 +60,12 @@ public:
 
 private:
     float  m_spectrum[kSpectrumBands] = {0};
+    float  m_peaks[kSpectrumBands]    = {0};
     float  m_osc[kOscSamples]         = {0};
     float  m_vuL = 0.0f;
     float  m_vuR = 0.0f;
     double m_level = 0.0;
+    float  m_peakDecay = 0.02f;   // medium
 };
 
 // Winamp visualization colors (24 entries)

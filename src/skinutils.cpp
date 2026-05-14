@@ -189,9 +189,21 @@ void fft512(const float *input, float *magnitudes) {
 
 void AudioAnalyzer::reset() {
     std::fill(std::begin(m_spectrum), std::end(m_spectrum), 0.0f);
+    std::fill(std::begin(m_peaks),    std::end(m_peaks),    0.0f);
     std::fill(std::begin(m_osc),      std::end(m_osc),      0.0f);
     m_vuL = m_vuR = 0.0f;
     m_level = 0.0;
+}
+
+void AudioAnalyzer::setPeakFalloff(int idx) {
+    // Tuned at 50 fps repaint (qtamp's vis tick).  Slow → ~50 frames
+    // for the dot to traverse the full strip, Fastest → ~10 frames.
+    switch (qBound(0, idx, 3)) {
+    case 0: m_peakDecay = 0.008f; break;  // Slow
+    case 1: m_peakDecay = 0.020f; break;  // Medium
+    case 2: m_peakDecay = 0.045f; break;  // Fast
+    case 3: m_peakDecay = 0.090f; break;  // Fastest
+    }
 }
 
 void AudioAnalyzer::feed(const QAudioBuffer &buffer) {
@@ -257,6 +269,10 @@ void AudioAnalyzer::feed(const QAudioBuffer &buffer) {
             db = log10f(1.0f + maxVal * 5.0f) /
                  log10f(1.0f + 5.0f * 50.0f);
         m_spectrum[i] = qBound(0.0f, db, 1.0f);
+        // Peak follows the bar instantly on the way up, decays at
+        // m_peakDecay per feed on the way down.
+        m_peaks[i] = qMax(m_peaks[i] - m_peakDecay, m_spectrum[i]);
+        m_peaks[i] = qBound(0.0f, m_peaks[i], 1.0f);
     }
 
     // VU — RMS per channel * 3 (same scaling as winampwindow).

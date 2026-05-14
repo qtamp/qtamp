@@ -225,6 +225,8 @@ public:
         m_player.setAudioOutput(&m_audio);
         m_audio.setVolume(qreal(0.7));
 
+        reloadVisPrefs();
+
         // Audio-buffer tap so <vis> bars can bounce with the audio.
         // Qt 6.7+: QMediaPlayer routes raw PCM to a connected
         // QAudioBufferOutput in addition to the audio sink.
@@ -297,9 +299,20 @@ public:
     //    shared AudioAnalyzer.
     double audioLevel() const override { return m_analyzer.level(); }
     const float *spectrumData() const override { return m_analyzer.spectrum(); }
+    const float *peakData()     const override { return m_analyzer.peaks();    }
     const float *oscData()      const override { return m_analyzer.osc(); }
     float vuLeft()  const override { return m_analyzer.vuLeft();  }
     float vuRight() const override { return m_analyzer.vuRight(); }
+    bool  peaksVisible() const override { return m_peaksVisible; }
+
+    // Reload viz prefs from QSettings (called on startup and when
+    // Preferences emits settingChanged).
+    void reloadVisPrefs() {
+        QSettings s(configPath(), QSettings::IniFormat);
+        m_peaksVisible = s.value("visualization/peaks", true).toBool();
+        m_analyzer.setPeakFalloff(
+            s.value("visualization/peakFalloff", 1).toInt());
+    }
 
     // ── Window control — implemented via the bound window.
     bool close()    override;
@@ -320,6 +333,7 @@ private:
     QAudioOutput  m_audio;
     QAudioBufferOutput m_bufOut;
     AudioAnalyzer m_analyzer;
+    bool          m_peaksVisible = true;
     int           m_lastChannels   = 0;
     int           m_lastSampleRate = 0;
     QtampPlayerWindow *m_window = nullptr;
@@ -1320,8 +1334,15 @@ public:
             });
             connect(prefs, &PreferencesDialog::settingChanged,
                     this, [this](const QString &key, const QVariant &v){
-                if (key == QStringLiteral("visMode"))
+                if (key == QStringLiteral("visMode")) {
                     setVisMode(v.toInt());
+                } else if (key == QStringLiteral("saPeaks") ||
+                           key == QStringLiteral("saPeakFalloff") ||
+                           key == QStringLiteral("saFalloff")) {
+                    // Refresh QtampHost's cached prefs and repaint.
+                    m_host->reloadVisPrefs();
+                    update();
+                }
             });
             prefs->setAttribute(Qt::WA_DeleteOnClose);
             prefs->exec();
