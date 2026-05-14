@@ -70,6 +70,14 @@ QSize qtampImageSize(const QString &bitmapId, void *userdata) {
     auto *registry = static_cast<WasabiQt::BitmapRegistry *>(userdata);
     if (!registry) return QSize();
     const auto *def = registry->find(bitmapId);
+    // NStatesButton convention: when the bare image id isn't a
+    // registered bitmap, fall back to `<id>0` (e.g. `repeat` →
+    // `repeat0`).  Without this, NStates buttons with no explicit
+    // w/h are invisible to hit-test and click-through never reaches
+    // them.
+    if (!def && !bitmapId.isEmpty()) {
+        def = registry->find(bitmapId + QStringLiteral("0"));
+    }
     if (!def) return QSize();
     if (!def->srcRect.isEmpty()) return def->srcRect.size();
     // Whole-image: load the image once and return its size.
@@ -2046,31 +2054,44 @@ int main(int argc, char *argv[]) {
         }
         screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
       }
+      auto fireMouseClickAtForClick = [view](QPointF pos) {
+          QMouseEvent down(QEvent::MouseButtonPress, pos, pos,
+              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+          QCoreApplication::sendEvent(view, &down);
+          QMouseEvent up(QEvent::MouseButtonRelease, pos, pos,
+              Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+          QCoreApplication::sendEvent(view, &up);
+          view->update();
+      };
 if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         const QString s = QString::fromLocal8Bit(c);
-        const QStringList ids = s.split(',', Qt::SkipEmptyParts);
-        // Fire each click on its own timer so prior state mutations
-        // get a paint pass before the next click runs.  Some scripts
-        // chain layout changes that don't take effect until after a
-        // repaint (e.g. close-after-open needs the open's resize to
-        // settle into the new layout root before close reads
-        // getGuiW/getGuiH).
+        const QStringList specs = s.split(QChar('|'), Qt::SkipEmptyParts);
+        // Spec is either a widget id (existing behaviour) or "x,y"
+        // canvas coords (NEW — exercises the full mousePressEvent
+        // pipeline including hit-test).  Multiple specs separated
+        // by '|' fire in sequence with 200ms between, so the prior
+        // state mutation gets a paint pass before the next click.
         int delay = 50;
-        for (const QString &id : ids) {
-            QTimer::singleShot(delay, view, [view, id]() {
+        for (const QString &spec : specs) {
+            QTimer::singleShot(delay, view, [view, spec, fireMouseClickAtForClick]() {
+                if (spec.contains(QChar(','))) {
+                    const auto parts = spec.split(QChar(','));
+                    if (parts.size() == 2) {
+                        const QPointF pt(parts[0].toInt(), parts[1].toInt());
+                        qInfo().noquote()
+                            << "qtamp: firing real click at" << pt;
+                        fireMouseClickAtForClick(pt);
+                        return;
+                    }
+                }
                 qInfo().noquote()
-                    << "qtamp: firing onLeftClick on" << id;
-                // Dispatch both the Maki onLeftClick event AND the
-                // widget virtual chain (onLeftButtonDown +
-                // onLeftButtonUp) — togglebutton / nstatesbutton
-                // cycle their state on the latter, Maki scripts
-                // listen on the former, and a real click does both.
-                if (auto *w = WasabiQt::Widget::findById(id)) {
+                    << "qtamp: firing onLeftClick on" << spec;
+                if (auto *w = WasabiQt::Widget::findById(spec)) {
                     WasabiQt::PaintCtx ctx{};
                     w->onLeftButtonDown(QPoint(0, 0), ctx);
                     w->onLeftButtonUp  (QPoint(0, 0), ctx);
                 }
-                WasabiQt::fireWidgetEvent(id, L"onLeftClick");
+                WasabiQt::fireWidgetEvent(spec, L"onLeftClick");
                 view->update();
             });
             delay += 200;
@@ -2093,6 +2114,15 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
           QMouseEvent ev(QEvent::MouseButtonPress, pos, pos,
               Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
           QCoreApplication::sendEvent(view, &ev);
+          view->update();
+      };
+      auto fireMouseClickAt = [view](QPointF pos) {
+          QMouseEvent down(QEvent::MouseButtonPress, pos, pos,
+              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+          QCoreApplication::sendEvent(view, &down);
+          QMouseEvent up(QEvent::MouseButtonRelease, pos, pos,
+              Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+          QCoreApplication::sendEvent(view, &up);
           view->update();
       };
       auto resolveTarget = [view](const QString &spec) -> QPointF {
