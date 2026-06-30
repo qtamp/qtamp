@@ -1,25 +1,36 @@
 #include <cstdio>
+#include <memory>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDialog>
 #include <QHoverEvent>
+#include <QMenu>
 #include <QMouseEvent>
+#include <QWindow>
 #include <QDir>
+#include <QDateTime>
 #include <QDirIterator>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QStandardPaths>
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickView>
 #include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QProcess>
+#include <QScreen>
 #include <QSettings>
 #include <QSplashScreen>
 #include <QSurfaceFormat>
 #include <QTimer>
 
+#include "audiometa.h"
+#include "eq10dsp.h"
 #include "playlistwindow.h"
 #include "skinutils.h"
 #include "translator.h"
@@ -27,20 +38,29 @@
 #include "winampwindow.h"
 #include "qt5compat.h"
 
+#ifdef QTAMP_WITH_MILKDROP
+#  include "MilkdropItem.h"
+#endif
+
 #ifdef WINAMP_HAVE_WASABIQT
-#  include <WasabiQt/SkinXml.h>
-#  include <WasabiQt/SkinView.h>
-#  include <WasabiQt/SkinQuickItem.h>
-#  include <WasabiQt/SkinRuntime.h>
-#  include <WasabiQt/Layout.h>
-#  include <WasabiQt/BitmapRegistry.h>
-#  include <WasabiQt/Host.h>
-#  include <WasabiQt/PaintCtx.h>
-#  include <WasabiQt/TreePainter.h>
-#  include <WasabiQt/Widget.h>
+#  include <qtWasabi/SkinXml.h>
+#  include <qtWasabi/SkinView.h>
+#  include <qtWasabi/SkinQuickItem.h>
+#  include <qtWasabi/SkinRuntime.h>
+#  include <qtWasabi/Layout.h>
+#  include <qtWasabi/BitmapRegistry.h>
+#  include <qtWasabi/Host.h>
+#  include <qtWasabi/PaintCtx.h>
+#  include <qtWasabi/WindowHolderRegistry.h>
+#  include <qtWasabi/TreePainter.h>
+#  include <qtWasabi/Widget.h>
+#  include <qtWasabi/MilkdropWidget.h>
+#  include <qtWasabi/CfgAttribStore.h>
 #  include <QAudioBuffer>
 #  include <QAudioBufferOutput>
 #  include <QAudioOutput>
+#  include <QAudioSink>
+#  include <QMediaDevices>
 #  include <QImage>
 #  include <QInputDialog>
 #  include <QKeyEvent>
@@ -67,7 +87,7 @@ namespace {
 // take their pixel size from a named bitmap (typical for buttons)
 // hit-test correctly.
 QSize qtampImageSize(const QString &bitmapId, void *userdata) {
-    auto *registry = static_cast<WasabiQt::BitmapRegistry *>(userdata);
+    auto *registry = static_cast<qtWasabi::BitmapRegistry *>(userdata);
     if (!registry) return QSize();
     const auto *def = registry->find(bitmapId);
     // NStatesButton convention: when the bare image id isn't a
@@ -95,8 +115,7 @@ QSize qtampImageSize(const QString &bitmapId, void *userdata) {
 #ifdef WINAMP_HAVE_WASABIQT
 
 // (Preferences + About + Jump-to-File + Play-Location dialogs live
-// in dialogs.{h,cpp} — ported verbatim from lord3nd3r/winamp-linux
-// so the UI matches the upstream player exactly.)
+// in dialogs.{h,cpp}.)
 #if 0  /* legacy inline-prefs stub, kept for reference */
 class QtampPreferencesDialog : public QDialog {
     Q_OBJECT
@@ -225,26 +244,48 @@ private:
 };
 #endif  /* legacy inline-prefs stub */
 
-// QtampHost — Qtamp's WasabiQt::Host implementation.  Shovels live
+// QtampHost — Qtamp's qtWasabi::Host implementation.  Shovels live
 // QMediaPlayer state through the abstract Host interface qtWasabi
 // expects, so qtWasabi's default DisplayResolver + dispatchAction
 // helpers can do the actual skin-format-convention work.
 class QtampPlayerWindow;
-class QtampHost : public QObject, public WasabiQt::Host {
+class QtampHost : public QObject, public qtWasabi::Host {
 public:
     QtampHost() {
-        m_player.setAudioOutput(&m_audio);
-        m_audio.setVolume(qreal(0.7));
-
         reloadVisPrefs();
 
-        // Audio-buffer tap so <vis> bars can bounce with the audio.
-        // Qt 6.7+: QMediaPlayer routes raw PCM to a connected
-        // QAudioBufferOutput in addition to the audio sink.
+        // Single, always-on audio path.  QMediaPlayer's QAudioOutput
+        // is INTENTIONALLY left unset — there's exactly one sink,
+        // `m_eqSink`, which we feed from `onAudioBuffer`.  Reasoning
+        // is in the plan: toggling between QAudioOutput and a
+        // separate QAudioSink left the audio device in a stale
+        // state on PulseAudio/PipeWire after every EQ on/off flip
+        // (and the QAudioBufferOutput buffer-receive callbacks
+        // stopped firing too, so the spectrum went dead).  By
+        // never connecting a parallel sink, the device exclusivity
+        // stays stable across the whole session.
         m_player.setAudioBufferOutput(&m_bufOut);
         QObject::connect(&m_bufOut,
                          &QAudioBufferOutput::audioBufferReceived,
                          this, &QtampHost::onAudioBuffer);
+
+        // Subscribe to the canonical EQ-enable cfgattrib key
+        // (synthesised by ButtonWidget for any button with
+        // action="EQ_TOGGLE" + activeImage, so it's already shared
+        // across the EQ ON button, its drawer LED, and the songinfo
+        // "eq" badge).  When the user clicks any of them, the store
+        // value flips and we toggle `m_eqEnabled` — the audio path
+        // is unchanged either way, the flag only switches between
+        // user-supplied band gains and 0 dB.
+        m_eqToggleSub = qtWasabi::CfgAttribStore::instance().subscribe(
+            QStringLiteral("__action:EQ_TOGGLE"),
+            [this](int v) { m_eqEnabled = (v != 0); });
+    }
+
+    ~QtampHost() override {
+        if (m_eqToggleSub)
+            qtWasabi::CfgAttribStore::instance().unsubscribe(
+                m_eqToggleSub);
     }
 
     void bindWindow(QtampPlayerWindow *w) { m_window = w; }
@@ -262,7 +303,11 @@ public:
         return m_player.playbackState() == QMediaPlayer::PausedState;
     }
     int     volume() const override {
-        return int(qBound(qreal(0), m_audio.volume(), qreal(1)) * 100);
+        // Volume is owned by the always-on EQ sink (m_eqSink); the
+        // legacy QAudioOutput is no longer used.  Before the sink
+        // exists (first buffer not yet arrived) fall back to the
+        // cached user value so the slider doesn't snap to 0.
+        return int(qBound(qreal(0), m_userVolume, qreal(1)) * 100);
     }
     int     channelCount() const override { return m_lastChannels; }
     int     sampleRate()   const override { return m_lastSampleRate; }
@@ -290,13 +335,101 @@ public:
             : src.toString();
     }
 
+    // Full path/URL — what System.getPlayItemString() returns (the
+    // skin's fileinfo.maki does removePath() on it).
+    QString songPath() const {
+        const QUrl src = m_player.source();
+        return src.isLocalFile() ? src.toLocalFile() : src.toString();
+    }
+
+    // Per-field track metadata for the file-info display.  Maps the
+    // skin's canonical lower-case field names onto Qt's QMediaMetaData
+    // keys.  Empty when the tag isn't present (line stays hidden).
+    QString playItemMetaData(const QString &field) const override {
+        const QMediaMetaData md = m_player.metaData();
+        const QString f = field.toLower();
+        auto s = [&](QMediaMetaData::Key k) { return md.value(k).toString(); };
+        if (f == QLatin1String("title"))    return s(QMediaMetaData::Title);
+        if (f == QLatin1String("artist")) {
+            const QString a = s(QMediaMetaData::ContributingArtist);
+            return a.isEmpty() ? s(QMediaMetaData::AlbumArtist) : a;
+        }
+        if (f == QLatin1String("album"))       return s(QMediaMetaData::AlbumTitle);
+        if (f == QLatin1String("albumartist")) return s(QMediaMetaData::AlbumArtist);
+        if (f == QLatin1String("track"))       return s(QMediaMetaData::TrackNumber);
+        if (f == QLatin1String("genre"))       return s(QMediaMetaData::Genre);
+        if (f == QLatin1String("composer"))    return s(QMediaMetaData::Composer);
+        if (f == QLatin1String("publisher"))   return s(QMediaMetaData::Publisher);
+        if (f == QLatin1String("comment"))     return s(QMediaMetaData::Comment);
+        if (f == QLatin1String("year")) {
+            const QVariant dv = md.value(QMediaMetaData::Date);
+            if (dv.canConvert<QDateTime>()) {
+                const int y = dv.toDateTime().date().year();
+                if (y > 0) return QString::number(y);
+            }
+            return dv.toString().left(4);
+        }
+        return QString();
+    }
+    // "Artist - Title" primary label; falls back to the plain title.
+    QString playItemDisplayTitle() const override {
+        const QMediaMetaData md = m_player.metaData();
+        const QString title = md.value(QMediaMetaData::Title).toString();
+        if (title.isEmpty()) return songTitle();
+        const QString artist =
+            md.value(QMediaMetaData::ContributingArtist).toString();
+        return artist.isEmpty() ? title : (artist + QStringLiteral(" - ") + title);
+    }
+    // Qt doesn't expose the decoder string; derive a readable name from
+    // the container so the "Decoder:" line isn't blank for known types.
+    QString decoderName() const override {
+        const QUrl src = m_player.source();
+        if (!src.isValid() || src.isEmpty()) return QString();
+        const QString ext =
+            QFileInfo(src.isLocalFile() ? src.toLocalFile() : src.path())
+                .suffix().toLower();
+        if (ext == QLatin1String("mp3"))  return QStringLiteral("MPEG Audio Decoder");
+        if (ext == QLatin1String("flac")) return QStringLiteral("FLAC Decoder");
+        if (ext == QLatin1String("ogg") || ext == QLatin1String("opus"))
+            return QStringLiteral("Ogg Vorbis Decoder");
+        if (ext == QLatin1String("m4a") || ext == QLatin1String("aac"))
+            return QStringLiteral("AAC Decoder");
+        if (ext == QLatin1String("wav"))  return QStringLiteral("WAV Decoder");
+        return ext.isEmpty() ? QString() : ext.toUpper() + QStringLiteral(" Decoder");
+    }
+
+    // Album cover for <albumart> widgets.  Qt 6's QMediaPlayer
+    // surfaces embedded cover art (ID3 APIC, FLAC PICTURE, MP4
+    // covr, etc.) through QMediaMetaData::CoverArtImage.  Cached
+    // implicitly because QImage uses CoW.
+    QImage albumArt() const override {
+        QVariant v = m_player.metaData()
+            .value(QMediaMetaData::CoverArtImage);
+        if (!v.canConvert<QImage>() || v.value<QImage>().isNull()) {
+            // Qt 6's ffmpeg backend exposes the embedded MP3 APIC /
+            // FLAC PICTURE frame as ThumbnailImage rather than
+            // CoverArtImage.  Fall back so the cover lights up
+            // regardless of which slot the backend populated.
+            v = m_player.metaData()
+                .value(QMediaMetaData::ThumbnailImage);
+        }
+        if (v.canConvert<QImage>()) return v.value<QImage>();
+        return QImage();
+    }
+
     // ── Transport ──────────────────────────────────────────────
     void play()  override { m_player.play(); }
     void pause() override { m_player.pause(); }
     void stop()  override { m_player.stop(); }
+    // Next/Prev were base-Host no-ops, so the transport Next/Prev buttons
+    // did nothing.  Route them through the playlist model (which emits
+    // trackDoubleClicked → setSource+play for the new current track).
+    void next()  override { if (m_playlist) m_playlist->nextTrack(); }
+    void prev()  override { if (m_playlist) m_playlist->prevTrack(); }
     void seekMs(qint64 ms) override { m_player.setPosition(ms); }
     void setVolume(int v) override {
-        m_audio.setVolume(qBound(0, v, 100) / qreal(100));
+        m_userVolume = qBound(0, v, 100) / qreal(100);
+        if (m_eqSink) m_eqSink->setVolume(m_userVolume);
     }
 
     // ── EJECT — pick a file AND start playing it.  Overrides the
@@ -316,6 +449,12 @@ public:
     float vuRight() const override { return m_analyzer.vuRight(); }
     bool  peaksVisible() const override { return m_peaksVisible; }
 
+    // Raw analyzer access for the MilkDrop overlay, which needs the
+    // native-rate PCM ring buffer (not the analyzer's 75-sample
+    // oscilloscope summary).  Non-const because the overlay drains
+    // the ring buffer on read.
+    AudioAnalyzer &analyzer() { return m_analyzer; }
+
     // Reload viz prefs from QSettings (called on startup and when
     // Preferences emits settingChanged).
     void reloadVisPrefs() {
@@ -332,49 +471,494 @@ public:
     bool toggleShade() override;
     bool showSystemMenu(QWidget *embedder = nullptr) override;
 
+    // ── EQ slider routing.  EQ_BAND with param="1".."10" or
+    //    "preamp" reads/writes per-band gain values in the
+    //    [0..63] Winamp slider scale.  Stored on the host so the
+    //    sliders can read back their state (e.g. on skin reload).
+    //    Applied to audio in `onAudioBuffer` via the eq10 DSP.
+    //
+    // Pull the no-param Host overloads into scope so qtamp call
+    // sites (e.g. applySliderDrag) keep compiling against the
+    // 2-arg form.  Without this `using` the override below would
+    // hide them and the 2-arg form becomes ambiguous.
+    using Host::sliderPosition;
+    using Host::setSliderPosition;
+
+    double sliderPosition(const QString &action,
+                           const QString &param) const override {
+        if (action.compare(QLatin1String("EQ_BAND"),
+                            Qt::CaseInsensitive) == 0) {
+            const int sliderVal = eqBandSliderValue(param);
+            // Return on the slider's 0..1 axis, with INVERTED y:
+            // Winamp's slider value 0 = +12 dB (top), 63 = -12 dB
+            // (bottom).  qtWasabi's vertical slider semantics are
+            // pos=0 at top, pos=1 at bottom — matches Winamp's
+            // direction.
+            return double(sliderVal) / 63.0;
+        }
+        // Balance/pan on the engine-wide 0..1 axis (0.5 = centre).
+        if (action.compare(QLatin1String("PAN"), Qt::CaseInsensitive) == 0)
+            return qBound(0.0, double(m_balance) / 127.0 * 0.5 + 0.5, 1.0);
+        return Host::sliderPosition(action);
+    }
+    void setSliderPosition(const QString &action, double v,
+                            const QString &param) override {
+        if (action.compare(QLatin1String("EQ_BAND"),
+                            Qt::CaseInsensitive) == 0) {
+            const int sliderVal = qBound(0,
+                int(v * 63.0 + 0.5), 63);
+            setEqBandSliderValue(param, sliderVal);
+            enableEqIfBandActive(sliderVal);
+            return;
+        }
+        if (action.compare(QLatin1String("PAN"), Qt::CaseInsensitive) == 0) {
+            // 0..1 (centre 0.5) → -127..+127 (the Winamp API balance scale).
+            // Repaint is driven by the caller (slider drag / the slider
+            // bridge lambda), as with the EQ_BAND case above.
+            m_balance = qBound(-127.0f, float((v - 0.5) * 2.0 * 127.0), 127.0f);
+            if (qEnvironmentVariableIntValue("WASABIQT_TRACE_MAKI") == 1)
+                fprintf(stderr, "[balance] PAN v=%.3f -> m_balance=%.1f\n",
+                        v, m_balance);
+            return;
+        }
+        Host::setSliderPosition(action, v);
+    }
+
+    // EQ enabled / auto toggle.  Wired from EQ_TOGGLE / EQ_AUTO
+    // action dispatch — qtamp's mousePressEvent calls these when
+    // the user clicks the corresponding buttons.
+    void setEqEnabled(bool on) { m_eqEnabled = on; }
+    bool eqEnabled() const     { return m_eqEnabled; }
+
+    // Maki System.setEqBand(band,val)/getEqBand(band): Wasabi's signed gain
+    // (-127..127, 0 = flat, +127 = full boost) mapped onto the same 0..63
+    // slider store that drives the EQ sliders AND the audio DSP — so the EQ
+    // reset/+/- buttons move the sliders and change the sound in lockstep.
+    // Slider 0 = top (+12 dB), 63 = bottom (-12 dB), 31 = flat.
+    void setEqBandValue(int band, int val) {
+        if (band < 0 || band > 9) return;
+        m_eqBandSlider[band] =
+            qBound(0, qRound(31.0 - val * 31.0 / 127.0), 63);
+        enableEqIfBandActive(m_eqBandSlider[band]);
+        if (qEnvironmentVariableIntValue("WASABIQT_TRACE_MAKI") == 1)
+            fprintf(stderr, "[eqband] setEqBand(%d, %d) -> slider %d (eq=%d)\n",
+                    band, val, m_eqBandSlider[band], m_eqEnabled ? 1 : 0);
+    }
+
+    // Moving a band off flat means the EQ is in use — turn it on (through the
+    // shared EQ-enable cfgattrib, so a skin's EQ LED/button tracks it).  This
+    // is what makes the EQ audible on skins like HeadAMP that expose NO EQ
+    // on/off control: without it m_eqEnabled stays false and onAudioBuffer
+    // forces every band to 0 dB no matter where the sliders sit.
+    void enableEqIfBandActive(int sliderVal) {
+        if (sliderVal != 31 && !m_eqEnabled)
+            qtWasabi::CfgAttribStore::instance().set(
+                QStringLiteral("__action:EQ_TOGGLE"), 1);
+    }
+    int eqBandValue(int band) const {
+        if (band < 0 || band > 9) return 0;
+        return qBound(-127,
+            qRound((31 - m_eqBandSlider[band]) * 127.0 / 31.0), 127);
+    }
+
+    // ── Hook the existing PlaylistWindow / library root into the
+    //    Host playlist + library accessors.  Wired from main()
+    //    after both objects exist.  The library root is a
+    //    filesystem path used as the QDir root for libraryRow*().
+    void setPlaylist(PlaylistWindow *pl) { m_playlist = pl; }
+    void setLibraryRoot(const QString &root) { m_libraryRoot = root; }
+
+    // Single funnel for "open a track" intent.  Appends to the Host
+    // playlist model (the same model the pledit renderer reads via
+    // playlistRowCount/playlistRowText) AND starts playback, so opening
+    // a song through the UI actually shows up in the playlist instead of
+    // only swapping the audio source.  enqueueOnly=true adds without
+    // changing what's playing.  Engine-agnostic; all open/enqueue call
+    // sites should route through here rather than poking m_player.
+    void enqueueAndPlay(const QUrl &u, bool enqueueOnly = false) {
+        if (u.isEmpty()) return;
+        const QString path = u.isLocalFile() ? u.toLocalFile() : u.toString();
+        int row = -1;
+        if (m_playlist) { row = m_playlist->trackCount(); m_playlist->addTrack(path); }
+        if (!enqueueOnly) {
+            if (m_playlist && row >= 0) m_playlist->setCurrentTrackIndex(row);
+            m_player.setSource(u);
+            m_player.play();
+        }
+    }
+
+    // Add a batch of URLs: the first starts playing, the rest enqueue (unless
+    // the caller wants everything enqueued).  Used by the multi-file and
+    // folder open paths so a whole album lands in the playlist at once.
+    void enqueueUrls(const QList<QUrl> &urls, bool enqueueOnly = false) {
+        bool first = true;
+        for (const QUrl &u : urls) {
+            enqueueAndPlay(u, enqueueOnly || !first);
+            first = false;
+        }
+    }
+    static const QStringList &audioExts() {
+        static const QStringList e = {
+            QStringLiteral("mp3"), QStringLiteral("flac"), QStringLiteral("ogg"),
+            QStringLiteral("opus"), QStringLiteral("wav"), QStringLiteral("m4a"),
+            QStringLiteral("aac"), QStringLiteral("wma"), QStringLiteral("aiff"),
+            QStringLiteral("alac") };
+        return e;
+    }
+    // Multi-file open — the user can select MANY tracks at once (not just one),
+    // including everything in a folder via Ctrl+A.  Returns the chosen URLs.
+    QList<QUrl> openFilesAndEnqueue(QWidget *embedder, bool enqueueOnly = false) {
+        const QStringList paths = QFileDialog::getOpenFileNames(
+            embedder, QObject::tr("Open file(s)"),
+            QStandardPaths::writableLocation(QStandardPaths::MusicLocation),
+            QObject::tr("Audio (*.mp3 *.flac *.ogg *.opus *.wav *.m4a *.aac "
+                        "*.wma *.aiff *.alac);;All files (*)"));
+        QList<QUrl> urls;
+        for (const QString &p : paths) urls << QUrl::fromLocalFile(p);
+        enqueueUrls(urls, enqueueOnly);
+        return urls;
+    }
+    // Folder open — recursively collect audio files (sorted) and enqueue them.
+    QList<QUrl> openFolderAndEnqueue(QWidget *embedder, bool enqueueOnly = false) {
+        const QString dir = QFileDialog::getExistingDirectory(
+            embedder, QObject::tr("Open folder"),
+            QStandardPaths::writableLocation(QStandardPaths::MusicLocation));
+        QList<QUrl> urls;
+        if (dir.isEmpty()) return urls;
+        QStringList files;
+        QDirIterator it(dir, QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString f = it.next();
+            if (audioExts().contains(QFileInfo(f).suffix().toLower()))
+                files << f;
+        }
+        // Order by the embedded album sequence (track/disc tags), not by
+        // filename — an album whose files are named "Artist - Title" with
+        // no leading number would otherwise enqueue alphabetically instead
+        // of in album order.  Falls back to filename when no tags exist.
+        audiometa::sortByTrack(files);
+        for (const QString &f : files) urls << QUrl::fromLocalFile(f);
+        enqueueUrls(urls, enqueueOnly);
+        return urls;
+    }
+
+    int  playlistRowCount() const override {
+        return m_playlist ? m_playlist->trackCount() : 0;
+    }
+    QString playlistRowText(int row) const override {
+        return m_playlist ? m_playlist->trackDisplayAt(row) : QString();
+    }
+    qint64 playlistRowDurationMs(int row) const override {
+        return m_playlist ? m_playlist->trackDurationAt(row) : 0;
+    }
+    int  playlistCurrentRow() const override {
+        return m_playlist ? m_playlist->currentTrackIndex() : -1;
+    }
+    void playlistSetCurrentRow(int row) override {
+        if (m_playlist) m_playlist->setCurrentTrackIndex(row);
+    }
+    void playlistPlayRow(int row) override {
+        if (!m_playlist) return;
+        m_playlist->setCurrentTrackIndex(row);
+        m_playlist->playCurrentTrack();
+    }
+    bool pleditCommand(const QString &verb) override {
+        if (!m_playlist) return false;
+        m_playlist->pleditButtonMenu(verb);   // pops Add/Rem/Sel/Misc/Manage
+        return true;
+    }
+
+    int libraryRowCount(const QString &parent) const override {
+        const QString p = parent.isEmpty() ? m_libraryRoot : parent;
+        if (p.isEmpty()) return 0;
+        return libraryEntries(p).size();
+    }
+    QString libraryRowLabel(const QString &parent, int row) const override {
+        const QString p = parent.isEmpty() ? m_libraryRoot : parent;
+        const auto entries = libraryEntries(p);
+        return (row >= 0 && row < entries.size())
+            ? entries[row].fileName() : QString();
+    }
+    QString libraryRowPath(const QString &parent, int row) const override {
+        const QString p = parent.isEmpty() ? m_libraryRoot : parent;
+        const auto entries = libraryEntries(p);
+        return (row >= 0 && row < entries.size())
+            ? entries[row].absoluteFilePath() : QString();
+    }
+    bool libraryRowHasChildren(const QString &parent, int row) const override {
+        const QString p = parent.isEmpty() ? m_libraryRoot : parent;
+        const auto entries = libraryEntries(p);
+        return (row >= 0 && row < entries.size())
+            ? entries[row].isDir() : false;
+    }
+
 private:
+    QFileInfoList libraryEntries(const QString &dirPath) const {
+        if (dirPath.isEmpty()) return {};
+        return QDir(dirPath).entryInfoList(
+            QDir::AllEntries | QDir::NoDotAndDotDot,
+            QDir::DirsFirst | QDir::Name);
+    }
+
+    PlaylistWindow *m_playlist     = nullptr;
+    QString         m_libraryRoot;
+
+
+    // 10 bands + 1 preamp, stored as Winamp 0..63 slider values
+    // (0 = +12 dB / top, 31 = 0 dB / middle, 63 = -12 dB / bottom).
+    int  m_eqBandSlider[10] = {31,31,31,31,31,31,31,31,31,31};
+    int  m_eqPreampSlider   = 31;
+    bool m_eqEnabled        = false;
+
+    int eqBandSliderValue(const QString &param) const {
+        if (param.compare(QLatin1String("preamp"),
+                            Qt::CaseInsensitive) == 0) {
+            return m_eqPreampSlider;
+        }
+        bool ok = false;
+        const int n = param.toInt(&ok);
+        if (!ok || n < 1 || n > 10) return 31;          // 0 dB default
+        return m_eqBandSlider[n - 1];
+    }
+    void setEqBandSliderValue(const QString &param, int v) {
+        v = qBound(0, v, 63);
+        if (param.compare(QLatin1String("preamp"),
+                            Qt::CaseInsensitive) == 0) {
+            m_eqPreampSlider = v;
+            return;
+        }
+        bool ok = false;
+        const int n = param.toInt(&ok);
+        if (!ok || n < 1 || n > 10) return;
+        m_eqBandSlider[n - 1] = v;
+    }
+
     void onAudioBuffer(const QAudioBuffer &buf) {
         if (!buf.isValid() || buf.frameCount() <= 0) return;
         m_lastChannels   = buf.format().channelCount();
         m_lastSampleRate = buf.format().sampleRate();
-        m_analyzer.feed(buf);
+        // ALWAYS-ON pipeline.  We process every buffer through the
+        // single `m_eqSink`, regardless of whether the user has
+        // toggled EQ on or off.  The flag `m_eqEnabled` only
+        // controls which band-gain values feed the eq10 filter:
+        //   • on  → user-supplied gains from the sliders
+        //   • off → 0 dB across the board + preamp = 1.0
+        //          (Q-asymmetric IIR at unity is bit-identical
+        //          passthrough)
+        // Net result: no device-exclusivity churn, no transient
+        // sink lifecycle, no hardcoded volume restoration.
+        runEqPipeline(buf);
     }
 
+    // Per-buffer DSP + sink pump.  Owns the lazy creation of
+    // `m_eqSink` (first valid buffer arrives → sink built at that
+    // sample rate / channel count).  Body in main.cpp below the
+    // class.
+    void runEqPipeline(const QAudioBuffer &buf);
+
     QMediaPlayer  m_player;
-    QAudioOutput  m_audio;
     QAudioBufferOutput m_bufOut;
     AudioAnalyzer m_analyzer;
     bool          m_peaksVisible = true;
     int           m_lastChannels   = 0;
     int           m_lastSampleRate = 0;
     QtampPlayerWindow *m_window = nullptr;
+    // EQ DSP state — single, always-on pipeline.  Sink is lazy-
+    // initialised on the first buffer at that buffer's format; we
+    // never tear it down until QtampHost is destroyed.
+    eq10_t        m_eqState[2] = {};
+    int           m_eqSampleRate = 0;
+    int           m_eqChannels   = 0;
+    QAudioSink   *m_eqSink       = nullptr;
+    QIODevice    *m_eqSinkDevice = nullptr;
+    qreal         m_userVolume   = qreal(0.7);
+    float         m_balance      = 0.0f;  // -127..+127, 0 = centre (Winamp API balance)
+    int           m_eqToggleSub  = 0;
     // Cached height before entering shade mode so we can restore on
     // the next SWITCH toggle.  0 = not currently shaded.
     int           m_savedHeight    = 0;
 };
 
-// Player-window wrapper around qtWasabi's SkinView.  Modern skins
-// paint their own chrome (titlebar, buttons, borders), so the host
-// window has to be frameless and the click-on-empty-area drag has
-// to be implemented by the embedder.  ESC closes; drag-and-move
-// works via QWindow::startSystemMove() on Wayland and a manual
-// move() fallback elsewhere.  All transport / display logic lives
-// in QtampHost; this class is just window shell + input routing.
-// Phase 6 migration: QtampPlayerWindow is now a QQuickItem subclass
-// hosted in a QQuickView (frameless transparent QQuickWindow).  All
-// the same input handling / state / paint as before — just on top of
-// the Qt Quick Scene Graph instead of QWidget paint events.  The
-// renderer chain (TreePainter -> QImage -> QSGTexture) lives in
-// SkinQuickItem's updatePaintNode + the paintInto virtual we
-// override here.  Auxiliary sub-windows (EQ / Playlist / etc.) stay
-// on the QWidget SkinView path for now; they migrate in a follow-up
-// once this primary one is stable.
-class QtampPlayerWindow : public WasabiQt::SkinQuickItem {
+// Always-on EQ pipeline for the modern-skin path.  Mirrors the
+// classic-skin DSP (10-band Q-asymmetric IIR + preamp lookup) but
+// runs unconditionally:
+//   • The flag `m_eqEnabled` decides whether the band gains come
+//     from the user sliders (when true) or are forced to 0 dB /
+//     preamp = 1.0 (when false).  The eq10 filter at 0 dB is
+//     mathematically a passthrough — no audible difference vs the
+//     un-EQ'd buffer.
+//   • There's exactly one output sink (`m_eqSink`) for the whole
+//     session, created lazily at the first buffer's format.  This
+//     was the regression that killed audio + spectrum when EQ was
+//     toggled off: tearing the sink down + relying on QAudioOutput
+//     to take over again was unreliable on PulseAudio/PipeWire.
+//   • The analyzer is always fed the post-DSP samples, so the
+//     spectrum reflects EQ when on and is the input as-is when off
+//     (because the DSP is unity).
+// Falls back silently when the buffer format is unsupported (Int32 /
+// UInt8 / etc.) — the analyzer still gets the raw buffer.
+void QtampHost::runEqPipeline(const QAudioBuffer &buf) {
+    const QAudioFormat fmt = buf.format();
+    const int frames   = buf.frameCount();
+    const int channels = fmt.channelCount();
+    const int sampleRate = fmt.sampleRate();
+    if (frames <= 0 || channels <= 0 || sampleRate <= 0) return;
+    if (fmt.sampleFormat() != QAudioFormat::Int16 &&
+        fmt.sampleFormat() != QAudioFormat::Float) {
+        // Fall back to passthrough analyzer feed for unsupported
+        // formats (Int32 / UInt8 / etc.).  Better than dropping
+        // audio entirely.
+        m_analyzer.feed(buf);
+        return;
+    }
+
+    // Lazy sink setup, or rebuild on sample-format change.
+    const int eqChannels = qMin(channels, 2);
+    if (!m_eqSink || sampleRate != m_eqSampleRate ||
+        eqChannels != m_eqChannels) {
+        m_eqSampleRate = sampleRate;
+        m_eqChannels   = eqChannels;
+        eq10_setup(m_eqState, m_eqChannels, double(sampleRate));
+        if (m_eqSink) {
+            m_eqSink->stop();
+            m_eqSink->deleteLater();
+            m_eqSinkDevice = nullptr;
+        }
+        QAudioFormat outFmt;
+        outFmt.setSampleRate(sampleRate);
+        outFmt.setChannelCount(m_eqChannels);
+        outFmt.setSampleFormat(QAudioFormat::Float);
+        m_eqSink = new QAudioSink(
+            QMediaDevices::defaultAudioOutput(), outFmt, this);
+        // ~200 ms buffer matches the classic-skin path.
+        m_eqSink->setBufferSize(
+            sampleRate * m_eqChannels * int(sizeof(float)) / 5);
+        m_eqSink->setVolume(m_userVolume);
+        m_eqSinkDevice = m_eqSink->start();
+    }
+    if (!m_eqSinkDevice) return;
+
+    // Pick the per-band gains.  When EQ is OFF we feed zeros — the
+    // eq10 IIR at 0 dB is a unity filter, so the output is
+    // bit-identical to the input modulo float roundoff.  When ON
+    // the gains come from the user sliders.  Refresh every buffer
+    // (cheap) so slider drags are immediately audible.
+    if (m_eqEnabled) {
+        for (int b = 0; b < 10; ++b)
+            eq10_setgain(m_eqState, m_eqChannels, b,
+                eq10_valtodb(m_eqBandSlider[b]));
+    } else {
+        for (int b = 0; b < 10; ++b)
+            eq10_setgain(m_eqState, m_eqChannels, b, 0.0);
+    }
+    const float preampGain = m_eqEnabled
+        ? eq_preamp_table[qBound(0, m_eqPreampSlider, 63)]
+        : 1.0f;
+
+    const int total = frames * m_eqChannels;
+    QVector<float> in(total), out(total);
+    if (fmt.sampleFormat() == QAudioFormat::Int16) {
+        const qint16 *src = buf.constData<qint16>();
+        for (int i = 0; i < frames; ++i)
+            for (int ch = 0; ch < m_eqChannels; ++ch)
+                in[i * m_eqChannels + ch] =
+                    (src[i * channels + ch] / 32768.0f) * preampGain;
+    } else {
+        const float *src = buf.constData<float>();
+        for (int i = 0; i < frames; ++i)
+            for (int ch = 0; ch < m_eqChannels; ++ch)
+                in[i * m_eqChannels + ch] =
+                    src[i * channels + ch] * preampGain;
+    }
+    for (int ch = 0; ch < m_eqChannels; ++ch)
+        eq10_processf(&m_eqState[ch], in.data(), out.data(),
+                      frames, ch, m_eqChannels);
+    // Snapshot the EQ'd-but-PRE-balance samples for the visualizer.  Balance
+    // is an output-stage pan; it must not gate the spectrum/Milkdrop, else
+    // panning fully to one side silences the channel the analyzer reads and
+    // the visualizer goes dark.  The spectrum still reflects the EQ.
+    QByteArray visBytes(reinterpret_cast<const char *>(out.data()),
+                        qint64(total) * qint64(sizeof(float)));
+    // Stereo balance (the Winamp API PAN): linear opposite-channel
+    // attenuation — panning left fades the right channel, and vice versa.
+    // Centre (m_balance==0) and mono are no-ops, so output stays unchanged.
+    if (m_eqChannels >= 2) {
+        const int pan = qRound(m_balance);   // -127..+127
+        if (pan != 0) {
+            const float balL = pan > 0 ? float(128 - pan) / 128.0f : 1.0f;
+            const float balR = pan < 0 ? float(128 + pan) / 128.0f : 1.0f;
+            for (int i = 0; i < frames; ++i) {
+                out[i * m_eqChannels + 0] *= balL;
+                out[i * m_eqChannels + 1] *= balR;
+            }
+        }
+    }
+    // Output to the sink (volume already applied via setVolume).
+    m_eqSinkDevice->write(reinterpret_cast<const char *>(out.data()),
+                           qint64(total) * qint64(sizeof(float)));
+    // Feed the EQ'd (pre-balance) samples into the analyzer so the spectrum
+    // reflects the EQ but not the output pan.  Float format, lossless.
+    QAudioFormat fbufFmt;
+    fbufFmt.setSampleRate(sampleRate);
+    fbufFmt.setChannelCount(m_eqChannels);
+    fbufFmt.setSampleFormat(QAudioFormat::Float);
+    QAudioBuffer processed(visBytes, fbufFmt);
+    m_analyzer.feed(processed);
+}
+
+// All transport / display logic lives in QtampHost; this class is
+// just the window shell + input routing.  Modern skins paint their
+// own chrome, so the host window is frameless and click-on-empty-area
+// drag is implemented here via QWindow::startSystemMove() (Wayland)
+// with a manual move() fallback elsewhere.
+// QtampPlayerWindow is a QQuickItem subclass hosted in a QQuickView
+// (frameless transparent QQuickWindow).  All the same input handling
+// / state / paint as a plain widget — just on top of the Qt Quick
+// Scene Graph instead of QWidget paint events.  The renderer chain
+// (TreePainter -> QImage -> QSGTexture) lives in SkinQuickItem's
+// updatePaintNode + the paintInto virtual we override here.
+// Auxiliary sub-windows (EQ / Playlist / etc.) stay on the QWidget
+// SkinView path.
+
+// Event filter for the WA5 menu-bar popups: Left/Right arrow keys walk
+// the prev/next sibling chain (mirrors Wasabi's nextMenu/_previousMenu),
+// while leaving QMenu's own submenu open/close on the arrows intact —
+// Right still opens a highlighted submenu, Left still closes an open one.
+class MenuArrowFilter : public QObject {
+public:
+    QMenu *menu = nullptr;
+    std::function<void()> onPrev, onNext;
+    bool eventFilter(QObject *o, QEvent *e) override {
+        if (e->type() != QEvent::KeyPress) return false;
+        auto *ke = static_cast<QKeyEvent *>(e);
+        if (::getenv("WASABIQT_TRACE_MAKI"))
+            fprintf(stderr, "[menukey] key=0x%x on %s\n", ke->key(),
+                    o ? o->metaObject()->className() : "?");
+        if (ke->key() == Qt::Key_Right) {
+            // A highlighted submenu opens on Right — don't navigate then.
+            if (menu && menu->activeAction() && menu->activeAction()->menu())
+                return false;
+            if (onNext) onNext();
+            return true;
+        }
+        if (ke->key() == Qt::Key_Left) {
+            // An open submenu closes on Left — don't navigate then.
+            if (menu)
+                for (QMenu *sub : menu->findChildren<QMenu *>())
+                    if (sub->isVisible()) return false;
+            if (onPrev) onPrev();
+            return true;
+        }
+        return false;
+    }
+};
+
+class QtampPlayerWindow : public qtWasabi::SkinQuickItem {
 public:
     // Keep the parsed skin Document around so we can spin off
     // secondary windows (EQ / Playlist) that load other containers
     // from the same skin on demand.
-    void setSkinDocument(WasabiQt::SkinXml::Document doc) {
+    void setSkinDocument(qtWasabi::SkinXml::Document doc) {
         m_doc = std::move(doc);
         // The base-class m_doc was captured by load() as a pointer
         // into the CALLER's stack-local Document.  After we take
@@ -382,16 +966,104 @@ public:
         // at the now-member-owned copy so paint paths can keep
         // dereferencing it safely.
         setDocument(&m_doc);
+        wireMilkdrop();
+    }
+
+    // Apply the player's colour theme (Wasabi "gammaset") after a skin
+    // load.  Real Winamp remembers the chosen colour theme; we mirror
+    // that.  Critically, the Bento family ships its frame borders/bevels
+    // as near-black SOURCE bitmaps and relies on a `boost=1` colour
+    // theme to lift them to the intended grey.  The skin's auto-marked
+    // `*Default` gammaset is `boost=0` (an identity-ish transform) so it
+    // leaves that chrome flat black — which is NOT how the skin is meant
+    // to look (the file-info|playlist seam reads as a black gap instead
+    // of a grey divider).  Restore the user's saved choice; otherwise
+    // prefer a flat-grey theme when the skin offers one, else fall back
+    // to whatever the engine auto-selected.  Engine-level/general: keyed
+    // off the theme NAME, not any per-skin widget id.
+    void applyPreferredColorTheme() {
+        // Offer the synthetic per-role recolor themes on EVERY skin (they
+        // sit alongside the skin's own themes, never replace them).  Tag any
+        // untagged bitmaps with a role from the widget tree, then synthesize
+        // themes that recolour each gammagroup the skin actually uses (its
+        // own "Backgrounds"/"Buttons"/… names plus the freshly tagged ones)
+        // by that role.
+        if (!gammasets().hasSyntheticStyles()) {
+            // A theme-less skin opts into accenting its drawer panels (the
+            // only large always-visible "spare" element on skins like
+            // HeadAMP, whose side drawers are the speaker ears).
+            registry().assignRolesFromWidgetTree(
+                tree(), gammasets().hadNoNativeThemes());
+            gammasets().injectSyntheticThemes(registry().usedGammagroups());
+            registry().clearAccentRegions();
+            // The lightning-bolt logo takes the body tint like the spectrum/
+            // file icons (no accent region).  HeadAMP's "Balance" and "Volume"
+            // labels are baked into the EQ-drawer body bitmap, so the body
+            // tint turns them purple while the neighbouring "reset" button (a
+            // separate bitmap) is themed as a button.  Tint just the label
+            // glyphs with the button role so they read the same as reset.
+            if (gammasets().hadNoNativeThemes() &&
+                m_doc.skinDir.contains(QStringLiteral("HeadAMP"),
+                                       Qt::CaseInsensitive))
+                registry().setRegionGroup(QStringLiteral("bg.drawerLeft"),
+                                          QRect(108, 31, 149, 13),
+                                          QStringLiteral("syn.button"), 80);
+        }
+        const QStringList have = gammasets().names();
+        if (have.isEmpty()) return;
+        QSettings s(configPath(), QSettings::IniFormat);
+        QString want = s.value(QStringLiteral("player/colortheme")).toString();
+        // Test override: WASABIQT_COLORTHEME forces a colour theme for the
+        // run (set it EMPTY to fall back to the skin's own dark auto-default
+        // `*Default`).  Lets the offscreen pipeline compare against stock
+        // Winamp instead of whatever synthetic recolor the user has saved.
+        if (qEnvironmentVariableIsSet("WASABIQT_COLORTHEME"))
+            want = qEnvironmentVariable("WASABIQT_COLORTHEME");
+        // ONLY honour an explicit saved choice.  Do NOT auto-pick a grey
+        // theme: the reference look is the skin's dark auto-default
+        // (`*Default`), and overriding it greyed the whole player.
+        if (!want.isEmpty() && have.contains(want))
+            setActiveGammaset(want);
     }
 
     // Toggle a secondary container window (EQ / Playlist / etc.).
     // Creates the SkinView lazily on first call.  Layout id matches
     // the skin XML convention — modern skins almost always use
     // "normal" as the default layout name.
-    void toggleSubwindow(const QString &containerId) {
-        WasabiQt::SkinView *&slot = m_subwindows[containerId.toLower()];
+    void toggleSubwindow(const QString &containerRef) {
+        // `containerRef` is the skin's TOGGLE param — either a literal
+        // container id, a component GUID, or one of Winamp's short
+        // component aliases (`pl`, `ml`, `vid`, `vis`, …).  Resolve it
+        // to the actual <container id="…"> via the engine so e.g.
+        // `guid:pl` opens <container id="Pledit"> and `guid:ml` opens
+        // <container id="MLibrary"> (Winamp Modern names its windows by
+        // component GUID, not by the `pl`/`ml` strings the buttons fire).
+        QString containerId =
+            qtWasabi::SkinXml::resolveContainerId(m_doc, containerRef);
+        if (containerId.isEmpty()) {
+            // Fall back to the raw reference so a direct-id skin (or a
+            // future container we don't alias) still gets a chance, and
+            // the load() failure path below logs a useful message.
+            containerId = containerRef;
+        }
+        qtWasabi::SkinView *slot = ensureSubwindow(containerRef);
+        if (!slot) return;
+        if (slot->isVisible()) slot->hide();
+        else                   slot->show();
+    }
+
+    // Lazily create + load a container's SkinView WITHOUT changing its
+    // visibility (toggleSubwindow owns show/hide).  Returns the slot, or
+    // nullptr if the container failed to load.  Also used by the offscreen
+    // `--screenshot-container` capture path so a container window (e.g. the
+    // Playlist Editor) can be rendered and grabbed without a compositor.
+    qtWasabi::SkinView *ensureSubwindow(const QString &containerRef) {
+        QString containerId =
+            qtWasabi::SkinXml::resolveContainerId(m_doc, containerRef);
+        if (containerId.isEmpty()) containerId = containerRef;
+        qtWasabi::SkinView *&slot = m_subwindows[containerId.toLower()];
         if (!slot) {
-            slot = new WasabiQt::SkinView();
+            slot = new qtWasabi::SkinView();
             const QString hostTitle = window() ? window()->title() : QString();
             slot->setWindowTitle(
                 "Qtamp — " + QFileInfo(hostTitle.mid(8)).fileName()
@@ -408,18 +1080,83 @@ public:
                     err.toLocal8Bit().constData());
                 slot->deleteLater();
                 slot = nullptr;
-                return;
+                return nullptr;
             }
+            // Tint the subwindow's chrome with the SAME active colour theme as
+            // the main window — otherwise its titlebar/frame greyscale bitmaps
+            // render untinted (the Winamp Modern titlebar gradient is a tinted
+            // base, so no active gammaset = a blank/transparent titlebar).
+            if (const qtWasabi::Gammaset *g = gammasets().active())
+                slot->setActiveGammaset(g->name);
             slot->resize(slot->layoutNativeSize());
-            slot->show();
-            return;
         }
-        if (slot->isVisible()) slot->hide();
-        else                   slot->show();
+        return slot;
+    }
+
+    // Like ensureSubwindow but never creates — for visibility queries
+    // (Maki isNamedWindowVisible at script init must not instantiate
+    // every queried window).
+    qtWasabi::SkinView *peekSubwindow(const QString &containerRef) const {
+        QString containerId =
+            qtWasabi::SkinXml::resolveContainerId(m_doc, containerRef);
+        if (containerId.isEmpty()) containerId = containerRef;
+        return m_subwindows.value(containerId.toLower(), nullptr);
+    }
+
+    // Perform a widget's `action=` exactly as a real click would.  The engine
+    // calls this (registerSkinWidgetClickCallback) from Maki's
+    // GuiObject.leftClick()/rightClick() when a script delegates a click and
+    // the target didn't consume it with an onLeftClick/onRightClick handler —
+    // so scripted click-delegation drives transport/toggle/page buttons on ANY
+    // skin, not just ones whose buttons carry a script handler.  Mirrors this
+    // window's real mousePressEvent dispatch (TOGGLE, builtin verbs,
+    // action_target) minus the hit-test/press-visual, since the target widget
+    // is named directly (and may be hidden, which a point hit-test can't reach).
+    bool triggerWidgetActionById(const QString &id, bool /*right*/) {
+        const qtWasabi::Layout::ResolvedWidget *w = nullptr;
+        std::function<void(const qtWasabi::Layout::ResolvedWidget &)> find =
+            [&](const qtWasabi::Layout::ResolvedWidget &n) {
+                if (w) return;
+                if (n.id.compare(id, Qt::CaseInsensitive) == 0) { w = &n; return; }
+                for (const auto &c : n.children) if (c) find(*c);
+            };
+        find(tree());
+        if (!w) return false;
+        const QString action = w->attrs.value(QStringLiteral("action"));
+        if (action.isEmpty()) return false;
+        if (qEnvironmentVariableIntValue("WASABIQT_TRACE_MAKI") == 1)
+            fprintf(stderr, "[clickaction] %s -> action=%s\n",
+                    w->id.toLocal8Bit().constData(),
+                    action.toLocal8Bit().constData());
+        if (action.compare(QStringLiteral("TOGGLE"), Qt::CaseInsensitive) == 0) {
+            const QString param = w->attrs.value(QStringLiteral("param"));
+            if (!param.isEmpty()) { toggleSubwindow(param); return true; }
+        }
+        if (qtWasabi::dispatchAction(action, m_host, nullptr)) return true;
+        const QString target = w->attrs.value(QStringLiteral("action_target"));
+        if (!target.isEmpty()) {
+            const QString param = w->attrs.value(QStringLiteral("param"));
+            if (action.startsWith(QStringLiteral("switchto;"),
+                                  Qt::CaseInsensitive)) {
+                const QString grp = action.section(QChar(';'), 1, 1);
+                if (!grp.isEmpty()) {
+                    qtWasabi::fireWidgetAttrSet(
+                        target, QStringLiteral("groupid"), grp);
+                    update();
+                    return true;
+                }
+            }
+            if (qtWasabi::fireWidgetActionEvent(
+                    target, action, param, 0, 0, 0, 0, w->id) > 0) {
+                update();
+                return true;
+            }
+        }
+        return false;
     }
 
     explicit QtampPlayerWindow(QtampHost *host, QQuickItem *parent = nullptr)
-        : WasabiQt::SkinQuickItem(parent), m_host(host) {
+        : qtWasabi::SkinQuickItem(parent), m_host(host) {
         // QQuickItem is hosted by a QQuickView; the view sets
         // FramelessWindowHint + transparent color itself (main()
         // creates the view).  No setAttribute/setWindowFlags here —
@@ -443,15 +1180,50 @@ public:
         // a node update on the scene graph.
         auto *tick = new QTimer(this);
         tick->setInterval(50);
+        connect(tick, &QTimer::timeout, this, [this]() {
+            // Only force the 20fps full-tree re-raster when something is
+            // actually animating frame-to-frame: the visualizer bars, or
+            // playback advancing the clock/seekbar.  When the player is
+            // idle with the visualizer off the chrome is static, so we
+            // leave repaints event-driven (transport signals + Maki
+            // setAttr both call update()).  Re-rasterising the entire
+            // skin 20x/sec at idle otherwise pins a CPU core for nothing.
+            if (m_visMode != 0 || m_host->isPlaying())
+                update();
+        });
         connect(tick, &QTimer::timeout, this,
-                qOverload<>(&QQuickItem::update));
+                &QtampPlayerWindow::syncMilkdropOverlay);
         tick->start();
 
         // Immediate repaint when transport state / source changes.
         connect(&host->player(), &QMediaPlayer::sourceChanged, this,
-                [this](const QUrl &) { update(); });
+                [this](const QUrl &) { fireTitleChange(); update(); });
         connect(&host->player(), &QMediaPlayer::playbackStateChanged,
-                this, [this](QMediaPlayer::PlaybackState) { update(); });
+                this, [this](QMediaPlayer::PlaybackState st) {
+            // Drive the Maki System playback callbacks so skins can swap
+            // their play/pause chrome (HeadAMP overlays a Play and a
+            // Pause button at the same spot, toggling visibility on
+            // System.onPlay/onResume/onPause/onStop).  Resumed vs Playing
+            // is distinguished by the previous state.
+            using PS = qtWasabi::SkinRuntime::PlaybackState;
+            if (m_runtime) {
+                if (st == QMediaPlayer::PlayingState)
+                    m_runtime->dispatchPlaybackState(
+                        m_prevPlaybackState == QMediaPlayer::PausedState
+                            ? PS::Resumed : PS::Playing);
+                else if (st == QMediaPlayer::PausedState)
+                    m_runtime->dispatchPlaybackState(PS::Paused);
+                else
+                    m_runtime->dispatchPlaybackState(PS::Stopped);
+            }
+            m_prevPlaybackState = st;
+            update();
+        });
+        // Track metadata arrives asynchronously after the source opens;
+        // re-fire System.onTitleChange so the skin's fileinfo.maki
+        // (re)populates the Title/Artist/Album/… display lines.
+        connect(&host->player(), &QMediaPlayer::metaDataChanged, this,
+                [this] { fireTitleChange(); update(); });
 
         // Pick up keyboard events (Esc to close, Ctrl-L for open
         // file, arrow keys for colorthemes scroll).  QQuickItems
@@ -503,7 +1275,7 @@ protected:
         // white instead of desktop-transparent, producing the
         // staircase-of-white visual the user has been calling out).
         m_ctListRect = QRect();
-        WasabiQt::TreePainter::paintTree(
+        qtWasabi::TreePainter::paintTree(
             p, tree(), registry(), fonts(),
             canvas, host(), &gammasets(), &colors(),
             m_ctSelectedRow, m_ctTopRow,
@@ -512,10 +1284,8 @@ protected:
 
     void mousePressEvent(QMouseEvent *e) override {
         if (e->button() == Qt::RightButton) {
-            // Right-click anywhere → Winamp-style context menu.
-            // Ported from winamp-linux's WinampWindow::showContext
-            // Menu (originally written by 3nd3r) and adapted to
-            // qtamp's WasabiQt::Host transport surface.
+            // Right-click anywhere → Winamp-style context menu,
+            // built against qtamp's qtWasabi::Host transport surface.
             showContextMenu(e->globalPosition().toPoint());
             return;
         }
@@ -533,22 +1303,34 @@ protected:
             // handlers run normally.)
 
             QRect hitBbox;
-            const auto *hit = WasabiQt::Layout::hitTest(
+            const auto *hit = qtWasabi::Layout::hitTest(
                 tree(), p, /*actionOnly=*/true,
                 qtampImageSize, &registry(), &hitBbox);
             if (hit) {
-                // <slider> widgets — drag-to-set instead of
-                // dispatchAction.  Click jumps the thumb to the
-                // click position; mouseMove follows.
-                if (hit->tag == QLatin1String("slider")) {
-                    m_sliderAction = hit->attrs
-                        .value(QStringLiteral("action")).toUpper();
-                    m_sliderTrack = hitBbox;
-                    applySliderDrag(p.x());
-                    update();
-                    return;
-                }
                 // Buttons / togglebuttons → action dispatch.
+                // Sliders are intentionally NOT handled here — they
+                // flow through the alphaHitTestList button-claim loop
+                // below so SliderWidget's own onLeftButtonDown
+                // (which handles vertical sliders, lastCanvasRect-
+                // relative drag, and host-setSliderPosition writes)
+                // owns the entire drag lifecycle.
+                // Show the pressed-state bitmap (downImage) so an action
+                // button visibly depresses.  This fast-path dispatches the
+                // action and returns, otherwise skipping the press
+                // lifecycle that script-driven buttons get via the
+                // alphaHitTestList claim loop below — leaving transport
+                // buttons looking dead even though they fire.  Plain
+                // <button> only: togglebuttons cycle their state on
+                // release and own their own press handling.  m_activeWidget
+                // routes the matching onLeftButtonUp from mouseReleaseEvent.
+                if (hit->tag == QLatin1String("button")) {
+                    auto *bw = const_cast<qtWasabi::Widget *>(hit);
+                    qtWasabi::PaintCtx bctx{};
+                    bctx.bmp  = &registry();
+                    bctx.host = host();
+                    bw->onLeftButtonDown(p, bctx);
+                    setActiveWidget(bw);
+                }
                 const QString action =
                     hit->attrs.value(QStringLiteral("action"));
                 fprintf(stderr, "[qtamp] action: %s\n",
@@ -558,21 +1340,58 @@ protected:
                 // skin doc — EQ, Playlist, etc.
                 if (action.compare(QStringLiteral("TOGGLE"),
                                    Qt::CaseInsensitive) == 0) {
-                    QString param = hit->attrs.value(
+                    const QString param = hit->attrs.value(
                         QStringLiteral("param"));
                     if (!param.isEmpty()) {
-                        // Strip "guid:" / "GUID:" prefix —
-                        // DeClassified writes `param="guid:pl"`.
-                        if (param.startsWith(QStringLiteral("guid:"),
-                                             Qt::CaseInsensitive))
-                            param = param.mid(5);
+                        // Pass the raw param through — toggleSubwindow
+                        // resolves "guid:pl" / "guid:ml" / a literal
+                        // GUID / a literal container id to the actual
+                        // <container id> via the engine's
+                        // SkinXml::resolveContainerId().
                         toggleSubwindow(param);
                         return;
                     }
                 }
+#ifdef QTAMP_WITH_MILKDROP
+                // VIS_Prev / VIS_Next — route to the MilkDrop
+                // overlay if one is wired.  The default
+                // dispatchAction has no idea what these are; without
+                // this hook the prev/next buttons in the AVS drawer
+                // fire but nothing happens.
+                //
+                // Note: there is intentionally no VIS_Random action
+                // here — real Winamp's Random control is a
+                // `<togglebutton cfgattrib="…;Random">`, not an
+                // action button.  Toggle state propagates through
+                // CfgAttribStore → MilkdropItem::setShuffle (wired in
+                // wireMilkdrop()), exactly mirroring Wasabi's model.
+                if (m_milkdropItem) {
+                    const QString A = action.toUpper();
+                    if (A == QLatin1String("VIS_PREV")) {
+                        m_milkdropItem->selectPrev();   return;
+                    }
+                    if (A == QLatin1String("VIS_NEXT")) {
+                        m_milkdropItem->selectNext();   return;
+                    }
+                }
+#endif
+                // EQ_TOGGLE used to be handled here as a special
+                // action that flipped QtampHost::m_eqEnabled.  That
+                // path returned early and prevented the button-
+                // claim loop from running cycleOnRelease, so the
+                // LEDs and the songinfo "eq" badge never lit up.
+                // It's gone now: the EQ ON button has action=
+                // EQ_TOGGLE + activeImage, so ButtonWidget gives it
+                // a synthetic __action:EQ_TOGGLE cfgattrib; clicks
+                // flow through the button-claim path to
+                // cycleOnRelease which writes the store; the
+                // QtampHost subscription updates m_eqEnabled, and
+                // all three EQ indicators (button, drawer LED,
+                // songinfo badge) read the same store and update in
+                // lockstep.  Single source of truth.
                 // dispatchAction wants a QWidget* embedder for file
                 // dialogs; QQuickItem isn't a QWidget so pass nullptr.
-                if (WasabiQt::dispatchAction(action, m_host, nullptr))
+                if (qtWasabi::dispatchAction(action, m_host, nullptr))
                     return;
                 // `action="X" action_target="Y"` — Wasabi's action-
                 // dispatch protocol.  Scripts that own widget Y
@@ -597,12 +1416,12 @@ protected:
                                    Qt::CaseInsensitive) == 0) {
                     const QString cbtarget = hit->attrs.value(
                         QStringLiteral("cbtarget"));
-                    auto &mut = const_cast<WasabiQt::Layout::ResolvedWidget &>(
+                    auto &mut = const_cast<qtWasabi::Layout::ResolvedWidget &>(
                         tree());
-                    std::function<WasabiQt::Layout::ResolvedWidget *(
-                        WasabiQt::Layout::ResolvedWidget &)> findBucket =
-                        [&](WasabiQt::Layout::ResolvedWidget &w)
-                              -> WasabiQt::Layout::ResolvedWidget * {
+                    std::function<qtWasabi::Layout::ResolvedWidget *(
+                        qtWasabi::Layout::ResolvedWidget &)> findBucket =
+                        [&](qtWasabi::Layout::ResolvedWidget &w)
+                              -> qtWasabi::Layout::ResolvedWidget * {
                         if (w.tag == QStringLiteral("componentbucket")) {
                             if (cbtarget.isEmpty() ||
                                 w.id.compare(cbtarget,
@@ -659,7 +1478,7 @@ protected:
                             const QString grp =
                                 action.section(QChar(';'), 1, 1);
                             if (!grp.isEmpty()) {
-                                WasabiQt::fireWidgetAttrSet(
+                                qtWasabi::fireWidgetAttrSet(
                                     target, QStringLiteral("groupid"), grp);
                                 update();
                                 return;
@@ -667,7 +1486,7 @@ protected:
                         }
                         const QString param = hit->attrs.value(
                             QStringLiteral("param"));
-                        int fired = WasabiQt::fireWidgetActionEvent(
+                        int fired = qtWasabi::fireWidgetActionEvent(
                             target, action, param,
                             p.x(), p.y(), 0, 0, hit->id);
                         if (fired > 0) {
@@ -683,7 +1502,7 @@ protected:
                 // videoavs.m's btnOpen.onLeftClick → openDrawer())
                 // without us needing per-skin glue.
                 if (!hit->id.isEmpty()) {
-                    int fired = WasabiQt::fireWidgetEvent(
+                    int fired = qtWasabi::fireWidgetEvent(
                         hit->id, L"onLeftClick");
                     if (fired > 0) {
                         update();
@@ -699,10 +1518,10 @@ protected:
             // click.  Chrome layers without handlers are skipped over
             // — they're opaque pixels with no script binding, so the
             // click should reach the button visually behind them.
-            const QList<const WasabiQt::Layout::ResolvedWidget *> hits =
+            const QList<const qtWasabi::Layout::ResolvedWidget *> hits =
                 alphaHitTestList(p, /*actionOnly=*/false,
                                   qtampImageSize, &registry());
-            const WasabiQt::Layout::ResolvedWidget *hit2 = nullptr;
+            const qtWasabi::Layout::ResolvedWidget *hit2 = nullptr;
             // For button-family widgets, fire onLeftButtonDown on the
             // topmost interactive hit BEFORE Maki dispatch so the
             // pressed-state bitmap shows immediately.  The widget is
@@ -714,20 +1533,31 @@ protected:
             bool buttonClaimed = false;
             for (const auto *w : hits) {
                 if (!w) continue;
+                // Capture-style widgets take the press for the whole
+                // press→move→release lifecycle: button/slider families by
+                // tag, plus any widget that reports capturesMouse() — the
+                // playlist / library list holders, whose onLeftButtonDown
+                // selects the row under the cursor and arms scrollbar drag.
+                // Claiming here (buttonClaimed) is also what stops the
+                // press from falling through to the window-move drag.
                 if (w->tag == QLatin1String("button") ||
                     w->tag == QLatin1String("togglebutton") ||
-                    w->tag == QLatin1String("nstatesbutton")) {
-                    auto *bw = const_cast<WasabiQt::Widget *>(w);
-                    WasabiQt::PaintCtx bctx{};
+                    w->tag == QLatin1String("nstatesbutton") ||
+                    w->tag == QLatin1String("slider") ||
+                    w->capturesMouse()) {
+                    auto *bw = const_cast<qtWasabi::Widget *>(w);
+                    qtWasabi::PaintCtx bctx{};
+                    bctx.bmp  = &registry();
+                    bctx.host = host();
                     bw->onLeftButtonDown(p, bctx);
-                    m_activeWidget = bw;
+                    setActiveWidget(bw);
                     buttonClaimed = true;
                     break;
                 }
             }
             for (const auto *w : hits) {
                 if (!w || w->id.isEmpty()) continue;
-                // Compiled widget behaviours first — real Wasabi has
+                // Compiled widget behaviours first — these widgets have
                 // built-in onLeftButtonDown handlers (Menu's hover/
                 // down state swap, Slider drag init, ScrollBar thumb
                 // grab) that take precedence over Maki onLeftClick.
@@ -735,14 +1565,66 @@ protected:
                 // the click we remember the widget so mouseRelease
                 // can route the corresponding onLeftButtonUp.
                 if (w->tag == QLatin1String("menu")) {
-                    auto *mw = const_cast<WasabiQt::Widget *>(w);
-                    WasabiQt::PaintCtx mctx{};
-                    mw->onLeftButtonDown(p, mctx);
-                    m_activeWidget = mw;
-                    update();
+                    qtWasabi::PaintCtx mctx{};
+                    const QString firstId =
+                        w->attrs.value(QStringLiteral("menu"));
+                    if (firstId.isEmpty()) {
+                        // No menu= target: engine down-state toggle only.
+                        auto *mw = const_cast<qtWasabi::Widget *>(w);
+                        mw->onLeftButtonDown(p, mctx);
+                        setActiveWidget(mw);
+                        update();
+                        return;
+                    }
+                    // Open the popup, showing the down face while it's up.
+                    // showWa5Menu returns the next menu widget to chain to
+                    // when the cursor swept onto a sibling in the same
+                    // menugroup — loop until a menu closes normally.
+                    const qtWasabi::Widget *cur = w;
+                    while (cur) {
+                        const QString menuId =
+                            cur->attrs.value(QStringLiteral("menu"));
+                        if (menuId.isEmpty()) break;
+                        const QString wid = cur->id;
+                        auto *mw = const_cast<qtWasabi::Widget *>(cur);
+                        mw->onLeftButtonDown(p, mctx);   // → down
+                        update();
+                        // Anchor at the menu button's bottom-left.
+                        QPoint anchor =
+                            mapToGlobal(QPointF(p.x(), p.y())).toPoint();
+                        const QRect cr = cur->lastCanvasRect;
+                        if (cr.isValid())
+                            anchor = mapToGlobal(QPointF(
+                                cr.x(), cr.y() + cr.height())).toPoint();
+                        const qtWasabi::Widget *next =
+                            showWa5Menu(menuId, anchor, cur);
+                        // A menu action (e.g. switching skins via
+                        // Options > Preferences) can rebuild the whole
+                        // widget tree, freeing mw/next.  Only touch a
+                        // pointer still registered as the live widget for
+                        // its id; otherwise the tree was replaced and these
+                        // pointers dangle — stop, the fresh tree is normal.
+                        const bool stillLive = !wid.isEmpty() &&
+                            qtWasabi::Widget::findById(wid) == mw;
+                        if (stillLive) {
+                            mw->onLeftButtonDown(p, mctx);   // → normal
+                            cur = next;
+                        } else {
+                            cur = nullptr;
+                        }
+                        update();
+                    }
+                    setActiveWidget(nullptr);
                     return;
                 }
-                int fired = WasabiQt::fireWidgetEvent(
+                // Standard window-control buttons (maximize/restore in
+                // the shared standardframe) carry no action= attribute;
+                // the skin's own simplemaximize.maki onLeftClick drives
+                // them through the Maki resize() binding, so no per-skin
+                // interception is needed here — the click falls through
+                // to the generic onLeftClick dispatch below.
+                applyDrawerModeFixup(w->id);
+                int fired = qtWasabi::fireWidgetEvent(
                     w->id, L"onLeftClick");
                 if (::getenv("WASABIQT_TRACE_MAKI"))
                     fprintf(stderr,
@@ -752,6 +1634,22 @@ protected:
                 if (fired > 0) {
                     update();
                     return;
+                }
+                // Event bubbling: a click on a nested widget whose own id has
+                // no onLeftClick handler (a tab's `bento.tabbutton.mousetrap`)
+                // should reach a handler bound on an ENCLOSING group — the
+                // Maki tab flow binds `switch.X.onLeftClick` and the click
+                // lands on the inner mousetrap.  Walk up the parent chain and
+                // fire onLeftClick on each id'd ancestor; receiver-gated, so
+                // passive ancestors cost nothing.  This is what drives
+                // suicore's switchToX (replacing the removed wireTabs system).
+                for (const qtWasabi::Widget *a = w->parentWidget;
+                     a; a = a->parentWidget) {
+                    if (a->id.isEmpty()) continue;
+                    if (qtWasabi::fireWidgetEvent(a->id, L"onLeftClick") > 0) {
+                        update();
+                        return;
+                    }
                 }
                 // First widget with an id becomes the tab-switcher
                 // candidate even if it had no Maki handler.
@@ -879,8 +1777,14 @@ protected:
                     row = qMax(0, names.indexOf(actName));
                 }
                 if (a == QLatin1String("colorthemes_switch")) {
-                    if (row >= 0 && row < names.size())
+                    if (row >= 0 && row < names.size()) {
                         setActiveGammaset(names[row]);
+                        // Remember the choice (real Winamp persists the
+                        // colour theme across restarts).
+                        QSettings(configPath(), QSettings::IniFormat)
+                            .setValue(QStringLiteral("player/colortheme"),
+                                      names[row]);
+                    }
                     return;
                 }
                 if (a == QLatin1String("colorthemes_previous")) {
@@ -906,6 +1810,14 @@ protected:
                 update();
                 return;
             }
+            // Empty area near an edge/corner → resize (native or manual
+            // fallback) BEFORE window-move, so dragging the border resizes
+            // instead of moving.  This must precede startSystemMove because
+            // on Wayland startSystemMove always succeeds and would win.
+            if (beginEdgeResize(e->position(), e->globalPosition().toPoint())) {
+                e->accept();
+                return;
+            }
             if (::getenv("WASABIQT_TRACE_MAKI"))
                 fprintf(stderr,
                     "[click] (%d,%d) falling through to window drag "
@@ -919,15 +1831,41 @@ protected:
                            (window() ? window()->position() : QPoint(0,0));
             m_dragging = true;
         }
-        WasabiQt::SkinQuickItem::mousePressEvent(e);
+        qtWasabi::SkinQuickItem::mousePressEvent(e);
+    }
+    // m_activeWidget can be freed under us if the widget tree is rebuilt
+    // (theme/skin reload, Maki relayout) between press and release.  Detect
+    // that by id — a pointer compare against the live registry, never a
+    // deref of the (possibly freed) widget — and drop the stale pointer.
+    void setActiveWidget(qtWasabi::Widget *w) {
+        m_activeWidget   = w;
+        m_activeWidgetId = w ? w->id : QString();
+    }
+    bool activeWidgetStale() const {
+        return m_activeWidget && !m_activeWidgetId.isEmpty() &&
+               qtWasabi::Widget::findById(m_activeWidgetId) != m_activeWidget;
     }
     void mouseMoveEvent(QMouseEvent *e) override {
-        if (!m_sliderAction.isEmpty() &&
-            (e->buttons() & Qt::LeftButton)) {
-            applySliderDrag(e->position().toPoint().x());
+        if (activeWidgetStale()) setActiveWidget(nullptr);
+        // Slider / list-holder drag — m_activeWidget owns the press,
+        // forward every move to it until release.  Slider's onMouseMove
+        // updates the host position; a playlist/library holder's
+        // onMouseMove drags its scrollbar thumb (capturesMouse() covers
+        // those — without this the scrollbar couldn't be dragged).
+        if (m_activeWidget && (e->buttons() & Qt::LeftButton) &&
+            (m_activeWidget->tag == QLatin1String("slider") ||
+             m_activeWidget->capturesMouse())) {
+            qtWasabi::PaintCtx ctx{};
+            ctx.bmp  = &registry();
+            ctx.host = host();
+            m_activeWidget->onMouseMove(e->position().toPoint(), ctx);
             update();
             return;
         }
+        // (Legacy m_sliderAction drag removed — SliderWidget's own
+        // onMouseMove handles drag now, via the m_activeWidget block
+        // above.  The legacy path only handled horizontal sliders
+        // and used a wrong coord system for vertical EQ bands.)
         if (m_ctDragging && (e->buttons() & Qt::LeftButton)) {
             // Map cursor y to thumb top, then to a row fraction.
             const int y = e->position().toPoint().y();
@@ -945,20 +1883,22 @@ protected:
         if (m_dragging && (e->buttons() & Qt::LeftButton) && window()) {
             window()->setPosition(e->globalPosition().toPoint() - m_dragOrigin);
         }
-        WasabiQt::SkinQuickItem::mouseMoveEvent(e);
+        qtWasabi::SkinQuickItem::mouseMoveEvent(e);
     }
     void mouseReleaseEvent(QMouseEvent *e) override {
         m_dragging = false;
         m_ctDragging = false;
-        m_sliderAction.clear();
+        if (activeWidgetStale()) setActiveWidget(nullptr);
         if (m_activeWidget && e->button() == Qt::LeftButton) {
-            WasabiQt::PaintCtx mctx{};
+            qtWasabi::PaintCtx mctx{};
+            mctx.bmp  = &registry();
+            mctx.host = host();
             m_activeWidget->onLeftButtonUp(
                 e->position().toPoint(), mctx);
-            m_activeWidget = nullptr;
+            setActiveWidget(nullptr);
             update();
         }
-        WasabiQt::SkinQuickItem::mouseReleaseEvent(e);
+        qtWasabi::SkinQuickItem::mouseReleaseEvent(e);
     }
     void keyPressEvent(QKeyEvent *e) override {
         const bool ctrl = e->modifiers() & Qt::ControlModifier;
@@ -970,11 +1910,7 @@ protected:
             // pickFile takes a QWidget* for the file-dialog parent.
             // Pass nullptr so the dialog parents to QGuiApplication;
             // the QQuickWindow itself isn't a QWidget.
-            const QUrl u = m_host->pickFile(nullptr);
-            if (!u.isEmpty()) {
-                m_host->player().setSource(u);
-                m_host->player().play();
-            }
+            m_host->pickFile(nullptr);   // enqueues + plays internally
             return;
         }
         if (e->key() == Qt::Key_Space) {
@@ -1004,40 +1940,42 @@ protected:
             setColorThemesTopRow(qMax(0, colorThemesTopRow() - 5));
             return;
         }
-        WasabiQt::SkinQuickItem::keyPressEvent(e);
+        qtWasabi::SkinQuickItem::keyPressEvent(e);
     }
     void wheelEvent(QWheelEvent *e) override {
         // Wheel scroll inside the colour-themes list moves the
         // top-row offset.  Outside the list area, fall through.
         const QPoint p = e->position().toPoint();
         const QRect lr = colorThemesListRect();
-        fprintf(stderr, "[wheel] at (%d,%d) ct_rect=%dx%d+%d+%d valid=%d "
-                "contains=%d delta=%d\n",
-                p.x(), p.y(),
-                lr.width(), lr.height(), lr.x(), lr.y(),
-                lr.isValid()?1:0, lr.contains(p)?1:0,
-                e->angleDelta().y());
-        fflush(stderr);
+        if (::getenv("WASABIQT_TRACE_MAKI")) {
+            fprintf(stderr, "[wheel] at (%d,%d) ct_rect=%dx%d+%d+%d valid=%d "
+                    "contains=%d delta=%d\n",
+                    p.x(), p.y(),
+                    lr.width(), lr.height(), lr.x(), lr.y(),
+                    lr.isValid()?1:0, lr.contains(p)?1:0,
+                    e->angleDelta().y());
+            fflush(stderr);
+        }
         if (lr.isValid() && lr.contains(p)) {
             const int steps = e->angleDelta().y() / 120;  // 1 notch = 120
             setColorThemesTopRow(qMax(0,
                 colorThemesTopRow() - steps));
             return;
         }
-        WasabiQt::SkinQuickItem::wheelEvent(e);
+        qtWasabi::SkinQuickItem::wheelEvent(e);
     }
 
 public:
     // Reload the modern skin at runtime — re-parses the document,
     // re-expands the layout, replays the static well-known-scripts,
-    // re-runs the Maki VM, and re-renders.  Mirrors the live-skin-swap
-    // path that the upstream winamp-linux PreferencesDialog drives
-    // through its `skinChanged(path)` signal.  Also used by the Phase 8
-    // hot-reload watcher when a skin XML file changes on disk.
+    // re-runs the Maki VM, and re-renders.  Drives the live-skin-swap
+    // path off the PreferencesDialog's `skinChanged(path)` signal.
+    // Also used by the hot-reload watcher when a skin XML file changes
+    // on disk.
     void reloadSkin(const QString &skinXmlPath) {
-        WasabiQt::SkinXml::Document doc;
+        qtWasabi::SkinXml::Document doc;
         QString err;
-        if (!WasabiQt::SkinXml::parse(skinXmlPath, doc, &err)) {
+        if (!qtWasabi::SkinXml::parse(skinXmlPath, doc, &err)) {
             QMessageBox::warning(nullptr, tr("Skin load failed"),
                 tr("Could not parse %1:\n%2").arg(skinXmlPath, err));
             return;
@@ -1048,13 +1986,39 @@ public:
             return;
         }
         setSkinDocument(doc);
+        applyPreferredColorTheme();
+        // Adopt the new skin's native layout size on the host window.
+        // SkinQuickItem::load() updates `m_nativeSize` via the parsed
+        // `<layout w h>` and we propagate that to the QQuickWindow so
+        // the OS window matches.  Without this, switching from a
+        // smaller skin (WinampModernPP, 354x164) to a wider one
+        // (Bento 800x600, Big Bento 1024x600) leaves the window at
+        // the old size and the new skin's right/bottom chrome
+        // overflows the viewport.  The reverse case is also broken —
+        // a tall skin loaded into a tiny window paints only its top
+        // band.  Skin-agnostic: every skin gets resized to its own
+        // declared native size.
+        if (auto *w = window()) {
+            const QSize ns = layoutNativeSize();
+            if (ns.isValid() && !ns.isEmpty()) {
+                w->setMinimumSize(QSize(0, 0));
+                w->setMaximumSize(QSize(16777215, 16777215));
+                w->resize(ns);
+                setSize(QSizeF(ns));
+            }
+        }
         // Any previously-open subwindows belong to the old skin doc.
         for (auto *w : std::as_const(m_subwindows)) if (w) w->deleteLater();
         m_subwindows.clear();
-        auto &mutableTree = const_cast<WasabiQt::Layout::ResolvedWidget &>(
+        auto &mutableTree = const_cast<qtWasabi::Layout::ResolvedWidget &>(
             tree());
-        WasabiQt::Layout::runKnownScripts(mutableTree,
+        qtWasabi::Layout::runKnownScripts(mutableTree,
                                           layoutNativeSize().width());
+        // Wire stepper buttons (Decrease/Increase + Display text)
+        // to their sibling cfgattrib slider.  Engine-level — works
+        // for any Wasabi skin that follows the canonical naming
+        // convention.
+        qtWasabi::Layout::wireSteppers(mutableTree);
         rebuildWindowRegion();
         // Re-run the Maki VM if the embedder gave us a runtime handle.
         // reset() tears down the prior VM state (scripts, system objects,
@@ -1064,6 +2028,13 @@ public:
         if (m_runtime) {
             m_runtime->reset();
             m_runtime->loadScripts(doc, mutableTree);
+            // Resolve every widget's effective pixel rect against the
+            // real layout size BEFORE scripts run, so Maki getWidth()/
+            // getHeight() on relat-sized groups (e.g. Bento's logo
+            // holder w="0" relatw="1") return the true ~200px instead
+            // of 0 — fixing the clipped WINAMP logo centering.
+            mutableTree.cacheResolvedRects(QPoint(0, 0),
+                                           layoutNativeSize());
             m_runtime->dispatchOnScriptLoaded();
             m_runtime->dispatchXuiParams(mutableTree);
             // Fire the initial onResize on every script that registered
@@ -1076,12 +2047,16 @@ public:
                     layoutNativeSize().height());
             }
         }
+        // dispatchInitialResize (called above) drives the playlist enlarge
+        // through the Maki VM's onResize fixpoint.  Just re-cache so paint +
+        // hit-test see the settled column.
+        mutableTree.cacheResolvedRects(QPoint(0, 0), layoutNativeSize());
         update();
     }
 
-    // Phase 8 hot-reload: watch every XML file under the skin
-    // directory for changes and trigger a full reload via
-    // `reloadSkin(rootXml)` ~250 ms after the last save batches.
+    // Hot-reload: watch every XML file under the skin directory for
+    // changes and trigger a full reload via `reloadSkin(rootXml)`
+    // ~250 ms after the last save batches.
     // Useful for skin authors iterating on layout / colour / script
     // edits without restarting qtamp.  Idempotent — calling again
     // with a new root path swaps the watcher's directory.
@@ -1128,50 +2103,81 @@ public:
         if (!xmls.isEmpty()) m_skinWatcher->addPaths(xmls);
     }
 
+    // The Maki runtime, for the OS-resize handler to re-fire onResize.
+    qtWasabi::SkinRuntime *skinRuntime() const { return m_runtime; }
+
     // Hand the SkinRuntime to the window so reloadSkin can reset it.
-    void setSkinRuntime(WasabiQt::SkinRuntime *r) { m_runtime = r; }
+    void setSkinRuntime(qtWasabi::SkinRuntime *r) {
+        m_runtime = r;
+        if (!r || !m_host) return;
+        // Pipe the host's real track metadata into the skin's Maki
+        // file-info scripts.  Keys are lower-case: "playitem:string",
+        // "playitem:displaytitle", "decoder", "meta:<field>".
+        QtampHost *h = m_host;
+        r->setPlayItemMetadataResolver(
+            [h](const QString &key) -> QString {
+                if (key == QLatin1String("playitem:string"))       return h->songPath();
+                if (key == QLatin1String("playitem:displaytitle")) return h->playItemDisplayTitle();
+                if (key == QLatin1String("decoder"))               return h->decoderName();
+                // Live data sources (otherwise unbound→0 in the VM):
+                if (key == QLatin1String("playitem:length"))       // seconds
+                    return QString::number(h->durationMs() / 1000);
+                if (key == QLatin1String("playitem:position"))     // seconds
+                    return QString::number(h->positionMs() / 1000);
+                if (key == QLatin1String("playlist:length"))
+                    return QString::number(h->playlistRowCount());
+                if (key == QLatin1String("playlist:index"))
+                    return QString::number(h->playlistCurrentRow());
+                if (key == QLatin1String("songinfo"))
+                    // No live multi-line song-info blob; empty is the
+                    // correct neutral (vs an int-0→"0" that would leak the
+                    // channel/bitrate guards).
+                    return QString();
+                if (key.startsWith(QLatin1String("meta:")))
+                    return h->playItemMetaData(key.mid(5));
+                return QString();
+            });
+    }
+
+    // (Re)fire System.onTitleChange on every loaded script so the
+    // skin's fileinfo.maki reloads the track-info display.  Safe to
+    // call before a skin/runtime exists (no-op).
+    void fireTitleChange() {
+        if (qEnvironmentVariableIntValue("WASABIQT_TRACE_META") == 1)
+            qInfo("[meta] fireTitleChange: runtime=%p host=%p title='%s'",
+                  (void *)m_runtime, (void *)m_host,
+                  m_host ? m_host->playItemDisplayTitle().toLocal8Bit().constData() : "");
+        if (m_runtime && m_host)
+            m_runtime->dispatchTitleChange(m_host->playItemDisplayTitle());
+    }
 
 private:
-    // Winamp-style right-click context menu.  Ported from
-    // winamp-linux's WinampWindow::showContextMenu (original
-    // author: 3nd3r <lord3nd3r@gmail.com>); items that don't yet
-    // have a backend in qtamp (preferences dialog, equalizer
-    // window, playlist window, video, media library, milkdrop,
-    // recent files, bookmarks) are intentionally left as enabled
-    // placeholders that surface a status — they wire up later as
-    // those subsystems land.  Items that do map onto qtamp's
-    // host surface (transport, jump-to-time, exit) are fully
-    // functional.
-    // Ported verbatim from lord3nd3r/winamp-linux's
-    // WinampWindow::showContextMenu (originally written by 3nd3r
-    // <lord3nd3r@gmail.com>).  Same submenus, same labels, same
-    // hotkey hints, same green-on-navy stylesheet, same PreferencesDialog
-    // and AboutDialog.  Items that map onto qtamp's host surface
-    // (Play file, Recent files, Bookmarks, Preferences, Jump to time,
-    // About, Exit, Colour Theme) are fully wired; the remainder are
-    // present so the menu tree is identical to upstream and they
-    // light up as those subsystems land.
+    // Winamp-style right-click context menu.  Items that map onto
+    // qtamp's host surface (Play file, Recent files, Bookmarks,
+    // Preferences, Jump to time, About, Exit, Colour Theme) are fully
+    // wired.  Items that don't yet have a backend in qtamp (equalizer
+    // window, playlist window, video, media library, milkdrop) are
+    // left as enabled placeholders that surface a status and wire up
+    // as those subsystems land.  Same submenus, labels, hotkey hints,
+    // and green-on-navy stylesheet as the classic Winamp menu, plus
+    // the PreferencesDialog and AboutDialog.
     // Q_INVOKABLE so the SYSMENU action (via Host::showSystemMenu)
     // can pop this same menu from a non-mouse path via
     // QMetaObject::invokeMethod("showContextMenu", Q_ARG(QPoint, ...)).
 public:
     Q_INVOKABLE void showContextMenu(QPoint globalPos) {
-        static const char *menuStyle =
-            "QMenu { background-color: #2b2d3d; color: #00ff00; border: 1px solid #555; font-size: 9pt; }"
-            "QMenu::item:selected { background-color: #0000c6; }"
-            "QMenu::item:checked { font-weight: bold; }"
-            "QMenu::item:disabled { color: #666; }"
-            "QMenu::separator { height: 1px; background: #555; margin: 2px 4px; }";
+        const QString menuStyle = themedMenuStyle();
 
         QMenu menu;
         menu.setStyleSheet(menuStyle);
 
-        // === Winamp main menu (matching Windows main.cpp top_menu) ===
+        // === Winamp-style main menu (mirrors the classic top menu) ===
 
         // -- Play submenu --
         QMenu *playMenu = menu.addMenu("Play");
         playMenu->setStyleSheet(menuStyle);
-        QAction *playFileAct = playMenu->addAction("Play file...\tL");
+        QAction *playFileAct = playMenu->addAction("Play file(s)...\tL");
+        QAction *playFolderAct = playMenu->addAction("Play folder...\tShift+L");
         QAction *playLocAct  = playMenu->addAction("Play location...\tCtrl+L");
         playMenu->addSeparator();
 
@@ -1307,33 +2313,34 @@ public:
         QAction *quitAct = menu.addAction("Exit");
 
         // === Handle selection ===
+        prepareMenuForWayland(menu);
         QAction *sel = menu.exec(globalPos);
         if (!sel) return;
 
         if (sel == playFileAct) {
             // QQuickItem isn't a QWidget; pass nullptr so the file
-            // dialog parents to QGuiApplication.
-            const QUrl u = m_host->pickFile(nullptr);
-            if (!u.isEmpty()) {
-                m_host->player().setSource(u);
-                m_host->player().play();
-                RecentFilesManager::instance().addFile(u.toLocalFile());
-            }
+            // dialog parents to QGuiApplication.  Multi-select.
+            const QList<QUrl> us = m_host->openFilesAndEnqueue(nullptr);
+            for (const QUrl &u : us)
+                if (!u.isEmpty())
+                    RecentFilesManager::instance().addFile(u.toLocalFile());
+        }
+        else if (sel == playFolderAct) {
+            const QList<QUrl> us = m_host->openFolderAndEnqueue(nullptr);
+            if (!us.isEmpty())
+                RecentFilesManager::instance().addFile(us.first().toLocalFile());
         }
         else if (sel == playLocAct) {
             PlayLocationDialog dlg(nullptr);
             if (dlg.exec() == QDialog::Accepted) {
                 QString url = dlg.getUrl();
-                if (!url.isEmpty()) {
-                    m_host->player().setSource(QUrl(url));
-                    m_host->player().play();
-                }
+                if (!url.isEmpty())
+                    m_host->enqueueAndPlay(QUrl(url));
             }
         }
         else if (recentOf.contains(sel)) {
             const QString f = recentOf.value(sel);
-            m_host->player().setSource(QUrl::fromLocalFile(f));
-            m_host->player().play();
+            m_host->enqueueAndPlay(QUrl::fromLocalFile(f));
         }
         else if (sel == addBmAct) {
             bool ok;
@@ -1345,8 +2352,7 @@ public:
         }
         else if (bmOf.contains(sel)) {
             const auto &bm = bmMgr.bookmarks[bmOf.value(sel)];
-            m_host->player().setSource(QUrl::fromLocalFile(bm.path));
-            m_host->player().play();
+            m_host->enqueueAndPlay(QUrl::fromLocalFile(bm.path));
         }
         else if (sel == aotAct) {
             if (auto *w = window()) {
@@ -1358,39 +2364,7 @@ public:
             }
         }
         else if (sel == prefsAct) {
-            auto *prefs = new PreferencesDialog(nullptr);
-            connect(prefs, &PreferencesDialog::skinChanged,
-                    this, [this](const QString &path){
-                // Persist the picked skin.  Modern skins reload in
-                // place via qtWasabi; classic skins require a renderer
-                // swap (this window is qtWasabi-only), so we restart
-                // the process — main() routes by skin type at boot.
-                QSettings s(configPath(), QSettings::IniFormat);
-                s.setValue("skin", path);
-                s.sync();
-                if (isModernSkinDir(path)) {
-                    const QString xml = path + "/skin.xml";
-                    if (QFile::exists(xml)) reloadSkin(xml);
-                } else {
-                    QProcess::startDetached(
-                        QApplication::applicationFilePath(), {});
-                    QApplication::quit();
-                }
-            });
-            connect(prefs, &PreferencesDialog::settingChanged,
-                    this, [this](const QString &key, const QVariant &v){
-                if (key == QStringLiteral("visMode")) {
-                    setVisMode(v.toInt());
-                } else if (key == QStringLiteral("saPeaks") ||
-                           key == QStringLiteral("saPeakFalloff") ||
-                           key == QStringLiteral("saFalloff")) {
-                    // Refresh QtampHost's cached prefs and repaint.
-                    m_host->reloadVisPrefs();
-                    update();
-                }
-            });
-            prefs->setAttribute(Qt::WA_DeleteOnClose);
-            prefs->exec();
+            openPreferences();
         }
         else if (sel == jumpTimeAct) {
             bool ok;
@@ -1411,8 +2385,7 @@ public:
             }
         }
         else if (sel == aboutAct) {
-            // The animated demoscene-style AboutDialog from the
-            // upstream dialogs.cpp — same look as winamp-linux.
+            // The animated demoscene-style AboutDialog.
             QString skinPath;
             const QUrl src = m_host->player().source();
             if (src.isLocalFile()) skinPath = QFileInfo(src.toLocalFile()).absolutePath();
@@ -1426,6 +2399,530 @@ public:
         else if (sel == quitAct) { if (window()) window()->close(); }
     }
 
+    // Open the Preferences dialog (shared by the context menu and the
+    // skin's Options menu).  Persists a picked skin + applies vis prefs.
+    void openPreferences() {
+        auto *prefs = new PreferencesDialog(nullptr);
+        prefs->setStyleSheet(themedDialogStyle());   // tint to the skin
+        // Feed the active skin's Color Themes into the dialog's picker, and
+        // apply a chosen one live — setActiveGammaset re-tints the skin and
+        // (via our override) this very dialog.  Show "Default colors"
+        // selected when the active theme is the skin's own default / none.
+        {
+            const QString activeName =
+                gammasets().active() ? gammasets().active()->name : QString();
+            const bool atDefault = activeName.isEmpty() ||
+                activeName == gammasets().defaultThemeName();
+            prefs->setColorThemes(gammasets().names(),
+                                  atDefault ? QString() : activeName);
+        }
+        connect(prefs, &PreferencesDialog::colorThemeChanged, this,
+                [this](const QString &name) {
+            // The "Default colors" entry isn't a real gammaset — revert to
+            // the skin's own default (its native default theme, or no tint).
+            const QString applied = gammasets().find(name)
+                ? name : gammasets().defaultThemeName();
+            if (::getenv("WASABIQT_TRACE_MAKI"))
+                fprintf(stderr, "[preftheme] pick '%s' -> apply '%s'\n",
+                        name.toLocal8Bit().constData(),
+                        applied.toLocal8Bit().constData());
+            setActiveGammaset(applied);
+            // The skin window is behind the (modal) dialog; make sure it
+            // actually re-renders with the new tint rather than waiting.
+            if (window()) window()->requestUpdate();
+            update();
+            QSettings(configPath(), QSettings::IniFormat)
+                .setValue(QStringLiteral("player/colortheme"), applied);
+        });
+        connect(prefs, &PreferencesDialog::skinChanged,
+                this, [this, prefs](const QString &path){
+            QSettings s(configPath(), QSettings::IniFormat);
+            s.setValue("skin", path);
+            s.sync();
+            if (isModernSkinDir(path)) {
+                const QString xml = path + "/skin.xml";
+                if (QFile::exists(xml)) {
+                    reloadSkin(xml);
+                    // The dialog stays open across the switch — refresh the
+                    // Color Theme picker (and the dialog tint) for the NEW
+                    // skin, otherwise it keeps showing the previous skin's
+                    // themes.
+                    prefs->setColorThemes(gammasets().names(),
+                        gammasets().active() ? gammasets().active()->name
+                                             : QString());
+                    prefs->setStyleSheet(themedDialogStyle());
+                }
+            } else {
+                QProcess::startDetached(
+                    QApplication::applicationFilePath(), {});
+                QApplication::quit();
+            }
+        });
+        connect(prefs, &PreferencesDialog::settingChanged,
+                this, [this](const QString &key, const QVariant &v){
+            if (key == QStringLiteral("visMode")) {
+                setVisMode(v.toInt());
+            } else if (key == QStringLiteral("saPeaks") ||
+                       key == QStringLiteral("saPeakFalloff") ||
+                       key == QStringLiteral("saFalloff")) {
+                m_host->reloadVisPrefs();
+                update();
+            }
+        });
+        prefs->setAttribute(Qt::WA_DeleteOnClose);
+        prefs->exec();
+    }
+
+    // React to a colour-theme switch: re-tint our own (non-skin) Qt chrome
+    // so an already-open dialog or popup follows the new theme live, not
+    // just the next one opened.  The skin re-tints itself through the base
+    // class; we add the chrome on top.
+    void setActiveGammaset(const QString &name) override {
+        qtWasabi::SkinQuickItem::setActiveGammaset(name);
+        restyleOpenChrome();
+    }
+
+    // Re-apply the skin-derived stylesheets to every chrome window that's
+    // visible right now.  General by construction: every QDialog / QMenu
+    // we create is themed, so a single sweep of the top-level widgets (and
+    // their nested submenus) keeps them all in sync with the active theme.
+    void restyleOpenChrome() {
+        const QString dlg = themedDialogStyle();
+        const QString mnu = themedMenuStyle();
+        const auto tops = QApplication::topLevelWidgets();
+        for (QWidget *w : tops) {
+            if (!w || !w->isVisible()) continue;
+            if (qobject_cast<QDialog *>(w)) w->setStyleSheet(dlg);
+            else if (qobject_cast<QMenu *>(w)) w->setStyleSheet(mnu);
+            const auto subs = w->findChildren<QMenu *>();
+            for (QMenu *sub : subs) sub->setStyleSheet(mnu);
+        }
+    }
+
+    // Wayland will only create a *grabbing* popup (one that holds keyboard
+    // focus) if the popup declares a transient parent and that parent
+    // recently held input.  Our main window is a QQuickWindow with no
+    // QWidget ancestor for a QMenu to inherit from, so a parentless menu
+    // fails to grab — and without the grab the menu gets no keyboard focus,
+    // which is why Up/Down and the Left/Right menu-bar sweep do nothing.
+    // Realise the menu's platform window and point it at the QQuickWindow.
+    void prepareMenuForWayland(QMenu &menu) {
+        menu.ensurePolished();
+        menu.winId();   // force-create the platform window so it has a handle
+        QWindow *mw = menu.windowHandle();
+        // Prefer our QQuickWindow; fall back to whatever window Qt currently
+        // considers focused (the surface the compositor will tie the grab to).
+        QWindow *parent = window();
+        if (!parent) parent = QGuiApplication::focusWindow();
+        if (mw && parent) mw->setTransientParent(parent);
+        if (::getenv("WASABIQT_TRACE_MAKI"))
+            fprintf(stderr,
+                    "[menuprep] handle=%p parent=%p focusWin=%p active=%p set=%d\n",
+                    (void *)mw, (void *)parent,
+                    (void *)QGuiApplication::focusWindow(),
+                    (void *)(window() ? window() : nullptr),
+                    int(mw && parent));
+    }
+
+    // Headless self-test (WASABIQT_SELFTEST_CHROME=<themeName>) for the
+    // two theme-related fixes that can't be screenshotted: (1) the
+    // menu-bar prev/next ring the Left/Right keys walk resolves to live
+    // widgets, and (2) the menu + dialog chrome actually changes colour
+    // when the colour theme switches.  Prints PASS/FAIL to stderr.
+    void runChromeSelfTest(const QString &themeName) {
+        fprintf(stderr, "[selftest] color themes (%d): %s\n",
+                int(gammasets().names().size()),
+                gammasets().names().join(QStringLiteral(", "))
+                    .toLocal8Bit().constData());
+        // (1) menu-bar ring: every <menu> with a next/prev points at a
+        // widget that still exists (this is exactly what chainByAttr does).
+        QList<const qtWasabi::Widget *> menus;
+        std::function<void(const qtWasabi::Widget &)> collect =
+            [&](const qtWasabi::Widget &w) {
+            if (w.tag == QLatin1String("menu") &&
+                !w.attrs.value(QStringLiteral("menu")).isEmpty())
+                menus.append(&w);
+            for (const auto &c : w.children) if (c) collect(*c);
+        };
+        collect(tree());
+        int ringOk = 0, ringTot = 0;
+        for (const qtWasabi::Widget *m : menus) {
+            const QString nx = m->attrs.value(QStringLiteral("next"));
+            const QString pv = m->attrs.value(QStringLiteral("prev"));
+            if (nx.isEmpty() && pv.isEmpty()) continue;
+            ++ringTot;
+            const bool nOk = nx.isEmpty() || qtWasabi::Widget::findById(nx);
+            const bool pOk = pv.isEmpty() || qtWasabi::Widget::findById(pv);
+            if (nOk && pOk) ++ringOk;
+            const QRect r = m->lastCanvasRect;
+            fprintf(stderr,
+                    "[selftest] menu '%s' rect=%d,%d,%dx%d next=%s%s prev=%s%s\n",
+                    m->id.toLocal8Bit().constData(),
+                    r.x(), r.y(), r.width(), r.height(),
+                    nx.toLocal8Bit().constData(), nOk ? "" : "(MISSING)",
+                    pv.toLocal8Bit().constData(), pOk ? "" : "(MISSING)");
+        }
+        fprintf(stderr, "[selftest] menu-bar ring: %d/%d resolve -> %s\n",
+                ringOk, ringTot,
+                (ringTot > 0 && ringOk == ringTot) ? "PASS"
+                    : ringTot == 0 ? "N/A (skin has no menu bar)" : "FAIL");
+
+        // (2) chrome re-tint across a colour-theme switch.
+        const QString active0 =
+            gammasets().active() ? gammasets().active()->name : QString();
+        const QString m0 = themedMenuStyle(), d0 = themedDialogStyle();
+        setActiveGammaset(themeName);
+        const QString m1 = themedMenuStyle(), d1 = themedDialogStyle();
+        // Dump the resolved wa_dlg colours under `themeName` — used to copy
+        // a native theme's exact dialog palette into a synthetic one.
+        for (const char *k : {"wasabi.window.background", "wasabi.window.text",
+                              "wasabi.list.background", "wasabi.list.text",
+                              "wasabi.list.text.selected.background",
+                              "wasabi.list.text.selected",
+                              "wasabi.button.text", "wasabi.button.dimmedText"}) {
+            const QColor c = colors().resolve(QString::fromLatin1(k),
+                                              &gammasets(), QColor());
+            fprintf(stderr, "[wadlg] %-40s = %s\n", k,
+                    c.isValid() ? c.name().toLocal8Bit().constData()
+                                : "(absent)");
+        }
+        setActiveGammaset(active0);   // restore
+        auto firstColor = [](const QString &qss) {
+            const int i = qss.indexOf(QStringLiteral("background-color:"));
+            return i < 0 ? QString() : qss.mid(i + 17, 7);
+        };
+        fprintf(stderr, "[selftest] theme '%s'->'%s'  menu bg %s->%s  dialog bg %s->%s\n",
+                active0.toLocal8Bit().constData(),
+                themeName.toLocal8Bit().constData(),
+                firstColor(m0).toLocal8Bit().constData(),
+                firstColor(m1).toLocal8Bit().constData(),
+                firstColor(d0).toLocal8Bit().constData(),
+                firstColor(d1).toLocal8Bit().constData());
+        fprintf(stderr, "[selftest] menu re-tint:   %s\n",
+                m0 != m1 ? "PASS (differs)" : "FAIL (unchanged)");
+        fprintf(stderr, "[selftest] dialog re-tint: %s\n",
+                d0 != d1 ? "PASS (differs)" : "FAIL (unchanged)");
+    }
+
+    // Build a QMenu stylesheet from the skin's palette.  Winamp resolves
+    // popup-menu colours (gen_ml/colors.cpp) from wasabi.popupmenu.* and,
+    // where a skin declares none, from the wa_dlg window/list roles —
+    // WADLG_WNDBG = wasabi.window.background, WADLG_WNDFG =
+    // wasabi.window.text, WADLG_HILITE = the list selection.  Those roles
+    // carry gammagroups, so resolving them through the ACTIVE gammaset
+    // makes the menu re-tint when the user switches colour theme.  Every
+    // key is resolved live, so a menu opened after a theme switch picks up
+    // the new colours.
+    QString themedMenuStyle() {
+        return menuStyleFor(QStringLiteral("QMenu"));
+    }
+
+    // Shared menu QSS builder (popup menus + context menu use the same
+    // colours).  `sel` names the widget the rules apply to so a nested
+    // QMenu inside a styled QDialog can reuse it.
+    QString menuStyleFor(const QString &sel) {
+        // A synthetic theme ships an absolute chrome palette (the skin's own
+        // colours carry no gammagroup, so they can't be tinted) — follow it.
+        if (const qtWasabi::Gammaset *a = gammasets().active();
+            a && a->hasChrome) {
+            return QStringLiteral(
+                "%8 { background-color:%1; color:%2; border:1px solid %3; font-size:9pt; }"
+                "%8::item:selected { background-color:%4; color:%5; }"
+                "%8::item:checked { font-weight:bold; }"
+                "%8::item:disabled { color:%6; }"
+                "%8::separator { height:1px; background:%7; margin:2px 4px; }")
+                .arg(a->chromeBg.name(), a->chromeFieldText.name(),
+                     a->chromeBorder.name(), a->chromeSelBg.name(),
+                     a->chromeSelText.name(), a->chromeFieldText.darker(180).name(),
+                     a->chromeBorder.name(), sel);
+        }
+        auto pick = [&](std::initializer_list<const char *> keys,
+                        QColor base) -> QString {
+            for (const char *k : keys) {
+                const QColor r = colors().resolve(QString::fromLatin1(k),
+                                                  &gammasets(), QColor());
+                if (r.isValid()) return r.name();
+            }
+            return base.name();
+        };
+        // bg/text follow the window (WNDBG/WNDFG); selection follows the
+        // list highlight; frame/inactive follow the dimmed button text.
+        const QString bg = pick({"wasabi.popupmenu.background",
+                                 "wasabi.window.background",
+                                 "color.display.bg"}, QColor(0x38, 0x37, 0x57));
+        const QString text = pick({"wasabi.popupmenu.text",
+                                   "wasabi.window.text",
+                                   "color.display"}, QColor(0xFF, 0xFF, 0xFF));
+        const QString frame = pick({"wasabi.popupmenu.frame",
+                                    "wasabi.button.dimmedText",
+                                    "wasabi.window.text"},
+                                   QColor(0x75, 0x74, 0x8B));
+        const QString selbg = pick({"wasabi.popupmenu.background.selected",
+                                    "wasabi.list.text.selected.background",
+                                    "color.selected.active.bg"},
+                                   QColor(0x75, 0x74, 0x8B));
+        const QString seltxt = pick({"wasabi.popupmenu.text.selected",
+                                     "wasabi.list.text.selected",
+                                     "wasabi.window.text"},
+                                    QColor(0xFF, 0xFF, 0xFF));
+        const QString dim = pick({"wasabi.popupmenu.text.inactive",
+                                  "wasabi.button.dimmedText"},
+                                 QColor(0x73, 0x73, 0x89));
+        const QString sep = pick({"wasabi.popupmenu.separator",
+                                  "wasabi.button.dimmedText"},
+                                 QColor(0x75, 0x74, 0x8B));
+        return QStringLiteral(
+            "%8 { background-color:%1; color:%2; border:1px solid %3; font-size:9pt; }"
+            "%8::item:selected { background-color:%4; color:%5; }"
+            "%8::item:checked { font-weight:bold; }"
+            "%8::item:disabled { color:%6; }"
+            "%8::separator { height:1px; background:%7; margin:2px 4px; }")
+            .arg(bg, text, frame, selbg, seltxt, dim, sep, sel);
+    }
+
+    // A QSS stylesheet for qtamp's own dialogs (Preferences, etc.),
+    // derived from the active skin's wa_dlg palette so they match the
+    // skin (and re-tint with the colour theme).  The dialog is a plain
+    // QDialog — Wasabi has no API to skin it — so this maps the skin's
+    // window/list/selection roles onto Qt's dialog widgets.
+    QString themedDialogStyle() {
+        // A synthetic theme supplies an absolute chrome palette (the skin's
+        // colours can't be tinted) — use it so Preferences re-themes exactly
+        // like a native Color Theme would.
+        if (const qtWasabi::Gammaset *a = gammasets().active();
+            a && a->hasChrome) {
+            const QColor btnBg = a->chromeBorder.lighter(135);
+            return dialogQss(a->chromeBg, a->chromeText, a->chromeField,
+                             a->chromeSelBg, a->chromeSelText, a->chromeBorder,
+                             btnBg, a->chromeFieldText, a->chromeButtonText);
+        }
+        auto pick = [this](std::initializer_list<const char *> keys,
+                           QColor hard) -> QColor {
+            for (const char *k : keys) {
+                const QColor r = colors().resolve(QString::fromLatin1(k),
+                                                  &gammasets(), QColor());
+                if (r.isValid()) return r;
+            }
+            return hard;
+        };
+        // Map the wa_dlg roles a real Winamp dialog uses: the window
+        // surface (WNDBG/WNDFG) for panels, labels and tabs; the list
+        // surface (ITEMBG/ITEMFG = wasabi.list.*) for editable fields and
+        // lists; the list highlight for selection; the dimmed button text
+        // for frames.  Every one of these carries a gammagroup, so the
+        // dialog re-tints with the active colour theme just like the skin.
+        const QColor windowBg = pick({"wasabi.window.background",
+                                      "color.display.bg"},
+                                     QColor(0x2b, 0x2d, 0x3d));
+        const QColor windowText = pick({"wasabi.window.text", "color.display"},
+                                       QColor(0xdd, 0xdd, 0xdd));
+        const QColor fieldBg = pick({"wasabi.list.background",
+                                     "wasabi.edit.background"},
+                                    windowBg.lightness() < 128
+                                        ? windowBg.lighter(135)
+                                        : windowBg.darker(115));
+        const QColor fieldText = pick({"wasabi.list.text", "wasabi.window.text",
+                                       "color.display"}, windowText);
+        const QColor selbg = pick({"wasabi.list.text.selected.background",
+                                   "color.selected.active.bg",
+                                   "studio.list.item.selected"},
+                                  QColor(0x31, 0x35, 0x40));
+        const QColor seltxt = pick({"wasabi.list.text.selected",
+                                    "color.selected.active",
+                                    "wasabi.window.text"},
+                                   QColor(0xff, 0xff, 0xff));
+        const QColor border = pick({"wasabi.button.dimmedText",
+                                    "wasabi.border.sunken"},
+                                   QColor(0x55, 0x55, 0x55));
+        const QColor buttonText = pick({"wasabi.button.text", "wasabi.window.text"},
+                                       windowText);
+        // Buttons sit slightly raised off the window surface.
+        const QColor buttonBg = windowBg.lightness() < 128
+                                    ? windowBg.lighter(140)
+                                    : windowBg.darker(112);
+        return dialogQss(windowBg, windowText, fieldBg, selbg, seltxt,
+                         border, buttonBg, fieldText, buttonText);
+    }
+
+    // Build the dialog QSS from a resolved set of role colours (shared by
+    // the skin-derived path and the synthetic-chrome path).
+    QString dialogQss(QColor windowBg, QColor windowText, QColor fieldBg,
+                      QColor selbg, QColor seltxt, QColor border,
+                      QColor buttonBg, QColor fieldText, QColor buttonText) {
+        return QStringLiteral(
+            "QDialog, QWidget { background-color:%1; color:%2; }"
+            "QLineEdit, QListWidget, QListView, QTreeView, QComboBox, QSpinBox,"
+            " QPlainTextEdit, QTextEdit, QAbstractScrollArea"
+            " { background-color:%3; color:%8; border:1px solid %6; }"
+            "QListWidget::item:selected, QListView::item:selected,"
+            " QTreeView::item:selected { background-color:%4; color:%5; }"
+            "QPushButton { background-color:%7; color:%9; border:1px solid %6;"
+            " padding:3px 10px; }"
+            "QPushButton:hover { background-color:%4; color:%5; }"
+            "QTabBar::tab { background:%1; color:%2; padding:4px 10px;"
+            " border:1px solid %6; }"
+            "QTabBar::tab:selected { background:%4; color:%5; }"
+            "QGroupBox { border:1px solid %6; margin-top:6px; }"
+            "QCheckBox, QRadioButton, QLabel { background:transparent;"
+            " color:%2; }")
+            .arg(windowBg.name(), windowText.name(), fieldBg.name(),
+                 selbg.name(), seltxt.name(), border.name(),
+                 buttonBg.name(), fieldText.name(), buttonText.name());
+    }
+
+    // The visible <Menu> widget whose canvas rect contains `itemPos`, if
+    // any.  Menus paint nothing themselves but cacheResolvedRects fills
+    // their lastCanvasRect, so the bar's button bounds are available for
+    // the hover-switch hit-test.
+    const qtWasabi::Widget *menuWidgetAt(QPoint itemPos) const {
+        const qtWasabi::Widget *found = nullptr;
+        std::function<void(const qtWasabi::Widget &)> walk =
+            [&](const qtWasabi::Widget &w) {
+            if (found) return;
+            if (w.tag == QLatin1String("menu") &&
+                w.attrs.value(QStringLiteral("visible")) !=
+                    QStringLiteral("0") &&
+                w.lastCanvasRect.contains(itemPos)) {
+                found = &w;
+                return;
+            }
+            for (const auto &c : w.children) if (c) walk(*c);
+        };
+        walk(tree());
+        return found;
+    }
+
+    // Spawn the popup for a skin menu-bar button (`<Menu menu="WA5:File">`).
+    // The WA5:* ids are Winamp's standard top-bar menus; we build a focused
+    // popup per id, wired to the same Host/window actions the right-click
+    // context menu uses.  While open it polls the cursor — moving onto a
+    // SIBLING <Menu> in the same `menugroup` cancels this popup and returns
+    // that widget so the caller can chain to it (the menu-bar sweep, per
+    // the Wasabi switchToMenu timer model).  Returns the next menu widget
+    // to open, or nullptr when the popup closed normally.
+    const qtWasabi::Widget *showWa5Menu(const QString &menuId,
+                                        QPoint globalPos,
+                                        const qtWasabi::Widget *source) {
+        const QString menuStyle = themedMenuStyle();
+        QMenu menu;
+        menu.setStyleSheet(menuStyle);
+        // Match on the trailing menu name so "WA5:File" and a bare "File"
+        // resolve the same.
+        const QString m = menuId.section(QChar(':'), -1).toLower();
+        if (::getenv("WASABIQT_TRACE_MAKI"))
+            fprintf(stderr, "[wa5menu] spawn '%s' (-> '%s') at (%d,%d)\n",
+                    menuId.toLocal8Bit().constData(),
+                    m.toLocal8Bit().constData(), globalPos.x(), globalPos.y());
+
+        QHash<QAction *, std::function<void()>> act;
+        if (m == QLatin1String("file")) {
+            act[menu.addAction("Play file...")] = [this]{
+                const QUrl u = m_host->pickFile(nullptr);
+                if (!u.isEmpty())
+                    RecentFilesManager::instance().addFile(u.toLocalFile());
+            };
+            act[menu.addAction("Play location...")] = [this]{
+                PlayLocationDialog dlg(nullptr);
+                if (dlg.exec() == QDialog::Accepted && !dlg.getUrl().isEmpty())
+                    m_host->enqueueAndPlay(QUrl(dlg.getUrl()));
+            };
+            menu.addSeparator();
+            act[menu.addAction("Exit")] =
+                [this]{ if (window()) window()->close(); };
+        } else if (m == QLatin1String("play")) {
+            const bool playing = m_host->isPlaying();
+            act[menu.addAction(playing ? "Pause" : "Play")] =
+                [this, playing]{ if (playing) m_host->pause();
+                                 else m_host->play(); };
+            act[menu.addAction("Stop")] = [this]{ m_host->stop(); };
+            menu.addSeparator();
+            act[menu.addAction("Previous")] = [this]{ m_host->prev(); };
+            act[menu.addAction("Next")]     = [this]{ m_host->next(); };
+        } else if (m == QLatin1String("options")) {
+            act[menu.addAction("Preferences...")] = [this]{ openPreferences(); };
+        } else if (m == QLatin1String("view") ||
+                   m == QLatin1String("windows")) {
+            act[menu.addAction("Playlist editor")] =
+                [this]{ toggleSubwindow(QStringLiteral("pl")); };
+            act[menu.addAction("Media library")] =
+                [this]{ toggleSubwindow(QStringLiteral("ml")); };
+            act[menu.addAction("Video")] =
+                [this]{ toggleSubwindow(QStringLiteral("vid")); };
+            menu.addSeparator();
+            QMenu *visM = menu.addMenu("Visualization");
+            visM->setStyleSheet(menuStyle);
+            const char *vl[] = { "Off", "Spectrum analyzer",
+                                 "Oscilloscope", "VU meter" };
+            for (int i = 0; i < 4; ++i) {
+                QAction *a = visM->addAction(vl[i]);
+                a->setCheckable(true);
+                a->setChecked(m_visMode == i);
+                act[a] = [this, i]{ setVisMode(i); };
+            }
+        } else if (m == QLatin1String("help")) {
+            act[menu.addAction("About...")] =
+                [this]{ AboutDialog about(QString(), nullptr); about.exec(); };
+        } else {
+            showContextMenu(globalPos);
+            return nullptr;
+        }
+
+        // menugroup hover-switch: while this popup is open, poll the cursor
+        // and chain to a sibling menu button it enters.  Record where the
+        // cursor was at spawn and only switch once it has actually MOVED
+        // (Wasabi's xuimenu timerCheck does the same) — otherwise a
+        // stationary cursor still hovering the just-clicked / arrow-key'd
+        // button would immediately yank the popup back to it.
+        const qtWasabi::Widget *chainTo = nullptr;
+        const QString grp = source
+            ? source->attrs.value(QStringLiteral("menugroup")) : QString();
+        const QPoint origCursor = QCursor::pos();
+        QTimer poll;
+        poll.setInterval(60);
+        connect(&poll, &QTimer::timeout, &menu, [&]{
+            if (!source || grp.isEmpty()) return;
+            const QPoint gc = QCursor::pos();
+            if (gc == origCursor) return;   // cursor hasn't moved yet
+            const QPoint ip = mapFromGlobal(gc).toPoint();
+            const qtWasabi::Widget *sib = menuWidgetAt(ip);
+            if (sib && sib != source &&
+                sib->attrs.value(QStringLiteral("menugroup"))
+                    .compare(grp, Qt::CaseInsensitive) == 0) {
+                chainTo = sib;
+                menu.close();
+            }
+        });
+        // Left/Right arrow keys walk the prev/next menu chain.
+        MenuArrowFilter navFilter;
+        navFilter.menu = &menu;
+        auto chainByAttr = [&](const QString &attr) {
+            if (!source) return;
+            const QString id = source->attrs.value(attr);
+            if (id.isEmpty()) return;
+            qtWasabi::Widget *nw = qtWasabi::Widget::findById(id);
+            if (nw && nw->tag == QLatin1String("menu")) {
+                chainTo = nw;
+                menu.close();
+            }
+        };
+        navFilter.onPrev = [&]{ chainByAttr(QStringLiteral("prev")); };
+        navFilter.onNext = [&]{ chainByAttr(QStringLiteral("next")); };
+        // App-level filter (not menu-level): on Wayland the xdg-popup may
+        // not hold keyboard focus, so a filter on the menu can miss the
+        // arrows.  qApp sees the key wherever Qt delivers it.  MUST be
+        // removed before navFilter (a local) is destroyed.
+        if (source) qApp->installEventFilter(&navFilter);
+
+        if (source) poll.start();
+        prepareMenuForWayland(menu);
+        QAction *sel = menu.exec(globalPos);
+        poll.stop();
+        if (source) qApp->removeEventFilter(&navFilter);
+        if (chainTo) return chainTo;          // chain; don't run the action
+        if (sel && act.contains(sel)) act.value(sel)();
+        return nullptr;
+    }
+
     void applySliderDrag(int xInWindow) {
         if (m_sliderTrack.width() <= 0) return;
         const double v = double(xInWindow - m_sliderTrack.x()) /
@@ -1433,6 +2930,374 @@ public:
         m_host->setSliderPosition(m_sliderAction,
                                    qBound(0.0, v, 1.0));
     }
+
+    // AVS-drawer mode-switch fixup.  The Maki chain in qtwasabi
+    // doesn't propagate drawer_showVideo's getVideoWindowHolder()
+    // .show() through to the WindowHolder widget — onShowVideo()'s
+    // button-bar swap (vis ↔ video) fires fine but the holder
+    // visibility never flips.  Recognise the two switchto clicks by
+    // widget id and toggle myviswnd/myvideownd visibility here in
+    // lockstep with the Maki dispatch.  By the Wasabi model this is
+    // handled entirely in script; this hook is a pragmatic interim
+    // until the VM correctly caches the holder lookup.  Case-tolerant
+    // because skin XML uses lowercase ids while Maki globals are
+    // bound with CamelCase aliases.
+    void applyDrawerModeFixup(const QString &clickedId) {
+        auto setVis = [](const char *id, bool on) {
+            if (auto *wnd = qtWasabi::Widget::findById(
+                    QString::fromLatin1(id)))
+                wnd->setXmlParam(QStringLiteral("visible"),
+                    on ? QStringLiteral("1") : QStringLiteral("0"));
+        };
+        // Per-mode visibility set covering BOTH the render slots
+        // (myviswnd / myvideownd) and the corresponding button bars
+        // (buttons.vis* / buttons.video*).  Wasabi's onShowVis /
+        // onShowVideo drives all of these in script, but our Timer
+        // port refuses the script's hides at SkinRuntimeBridge (the
+        // Timer-gated re-show would otherwise leave them invisible
+        // forever).  We bypass that by setting attrs directly here.
+        auto applyMode = [&](bool vis) {
+            // Render slot.
+            setVis("myviswnd",                vis);
+            setVis("myvideownd",             !vis);
+            // Button bar — "Switch" + "Detach" labels + the parent
+            // container groups that hold the secondary controls
+            // (Prev/Next/Random for vis, 1x/2x/FS for video).
+            setVis("buttons.vis",             vis);
+            setVis("buttons.vis.detach",      vis);
+            setVis("buttons.vis.switchto",    vis);
+            setVis("buttons.video",          !vis);
+            setVis("buttons.video.detach",   !vis);
+            setVis("buttons.video.switchto", !vis);
+        };
+        if (clickedId.compare(QLatin1String("button.vis.switchto"),
+                               Qt::CaseInsensitive) == 0) {
+            applyMode(false);   // switch to video mode
+        } else if (clickedId.compare(QLatin1String("button.vid.switchto"),
+                                      Qt::CaseInsensitive) == 0) {
+            applyMode(true);    // switch to visualiser mode
+        } else if (clickedId.compare(QLatin1String("videoavs.open"),
+                                      Qt::CaseInsensitive) == 0) {
+            // Drawer open — initial mode is visualiser.  Without
+            // this, myviswnd stays visible="0" (XML default), the
+            // milkdrop placeholder inside it never paints, and the
+            // MilkdropItem GL overlay never wakes up.  User would
+            // see a black drawer until they ping-pong through video
+            // mode and back.  Mirrors the Timer-driven Maki
+            // drawer_showVis path that our partial Timer port skips.
+            applyMode(true);
+        }
+    }
+
+    // Walk the freshly-loaded skin tree for the first <milkdrop>
+    // placeholder.  When found AND the build has QTAMP_WITH_MILKDROP,
+    // construct a MilkdropItem as a sibling overlay of this
+    // SkinQuickItem.  The per-tick `syncMilkdropOverlay` then snaps
+    // its geometry to the placeholder's canvas rect.
+    void wireMilkdrop() {
+        // Order matters: clear the stale placeholder pointer BEFORE
+        // any other code runs.  reloadSkin() rebuilds m_tree before
+        // calling us; the old m_milkdropPlaceholder dangled into the
+        // freed tree until this line.  syncMilkdropOverlay (50 ms
+        // GUI-thread tick) wouldn't actually fire mid-reload because
+        // we're single-threaded, but other re-entrant code paths
+        // (e.g. Maki scripts loaded by the runtime reset) could.
+        m_milkdropPlaceholder = nullptr;
+        m_milkdropPlaceholder = findAVSPlaceholder(&tree());
+#ifdef QTAMP_WITH_MILKDROP
+        // We deliberately do NOT delete MilkdropItem when the new
+        // skin has no <milkdrop> placeholder.  Deleting an item that
+        // owns a dedicated GL context + offscreen surface + projectM
+        // mid-reload races against the scene-graph render thread,
+        // which may still be inside our `beforeFrameBegin` slot
+        // (Qt::DirectConnection).  Instead we just clear the
+        // placeholder pointer above; the per-tick syncMilkdropOverlay
+        // hides the item when the placeholder is null, and the item
+        // stays alive across skin reloads.
+        if (m_milkdropPlaceholder && !m_milkdropItem) {
+            m_milkdropItem = new MilkdropItem(this);
+            m_milkdropItem->setAnalyzer(&m_host->analyzer());
+            m_milkdropItem->setVisible(false);  // until first sync
+            // Stack above chrome so the GL surface isn't masked.
+            m_milkdropItem->setZ(1000.0);
+            // Feed the offscreen MilkDrop frame to any AVS windowholder
+            // that lives in a window WITHOUT a GL surface (a detached
+            // SkinView).  The GL overlay still serves the main window;
+            // syncMilkdropOverlay flips readback on and sizes the FBO to
+            // the detached slot, so copyFrame() yields a frame exactly
+            // matching the slot's request — the size guard keeps a second
+            // AVS slot (e.g. the chrome's small album-art vis) from
+            // blitting a wrong-size copy.
+            qtWasabi::registerHolderFrameProvider(
+                [this](const QString &guidKey, const QSize &size) -> QImage {
+                    if (!m_milkdropItem) return QImage();
+                    if (guidKey != QStringLiteral(
+                            "{0000000a-000c-0010-ff7b-01014263450c}"))
+                        return QImage();
+                    QImage f;
+                    if (!m_milkdropItem->copyFrame(f)) return QImage();
+                    if (f.size() != size) return QImage();
+                    return f;
+                });
+        } else if (!m_milkdropPlaceholder && m_milkdropItem) {
+            m_milkdropItem->setVisible(false);
+        }
+        // Subscribe to the shuffle/random cfgattrib so the
+        // togglebutton's state propagates to projectM via
+        // projectm_playlist_set_shuffle().  Canonical Wasabi key
+        // suffix is `;Random` (case-insensitive); the GUID prefix
+        // can vary per skin (it's the vis-service GUID), so match
+        // by suffix to stay skin-agnostic.  On a skin reload the
+        // old subscription may point to the previous skin's key —
+        // unsubscribe and re-bind to whatever the current tree
+        // declares.
+        if (m_randomCfgSub != 0) {
+            qtWasabi::CfgAttribStore::instance().unsubscribe(
+                m_randomCfgSub);
+            m_randomCfgSub = 0;
+        }
+        if (m_milkdropItem) {
+            const QString key = findCfgAttribKeyForSuffix(
+                &tree(), QStringLiteral(";Random"));
+            if (!key.isEmpty()) {
+                auto &store = qtWasabi::CfgAttribStore::instance();
+                // Seed from the current store value (the togglebutton
+                // populated it during onAttrsInitialized).
+                m_milkdropItem->setShuffle(store.get(key) != 0);
+                m_randomCfgSub = store.subscribe(key,
+                    [this](int v) {
+                        if (m_milkdropItem)
+                            m_milkdropItem->setShuffle(v != 0);
+                    });
+            }
+        }
+#endif
+    }
+
+    // DFS the tree for the first widget whose `cfgattrib` ends with
+    // the given suffix (case-insensitive match).  Used to find the
+    // Random toggle's binding key without hard-coding the GUID.
+    QString findCfgAttribKeyForSuffix(
+            const qtWasabi::Widget *w, const QString &suffix) const {
+        if (!w) return QString();
+        const QString cfg = w->attrs.value(QStringLiteral("cfgattrib"));
+        if (!cfg.isEmpty() &&
+            cfg.endsWith(suffix, Qt::CaseInsensitive))
+            return cfg;
+        for (const auto &c : w->children) {
+            const QString k = findCfgAttribKeyForSuffix(c.get(), suffix);
+            if (!k.isEmpty()) return k;
+        }
+        return QString();
+    }
+
+    // DFS the tree for the AVS slot *currently being painted* with the
+    // largest canvas area.  A skin commonly declares several AVS host
+    // slots — Bento ships a tiny 84x84 `<component id="vis">` in the
+    // player chrome AND a full-size `<windowholder id="wdh.vis.object">`
+    // for the Visualization tab, both with the AVS GUID.  Only the slot
+    // the user has open keeps repainting (lastPaintedAtMs refreshes);
+    // others go stale.  A static first-match placeholder snapped the GL
+    // overlay to the 84x84 one, so the big tab stayed black.  Picking
+    // the freshest+largest alive slot each tick is skin-agnostic and
+    // follows the visualizer as the user switches chrome-vis ↔ vis tab.
+    const qtWasabi::Widget *
+    bestAliveAvsSlot(const qtWasabi::Widget *w, qint64 nowMs,
+                     const qtWasabi::Widget *best = nullptr) const {
+        if (!w) return best;
+        // PLACEMENT predicate is stricter than the load-time BUILD
+        // predicate (isAvsTag): the MilkDrop GL overlay may only land on
+        // a real visualization *window* (`windowholder`/`wmh`), never on
+        // an embedded `<component id="vis">` chrome slot.  Bento puts a
+        // tiny 84x74 `<component id="vis">` over the player display /
+        // album-art area (player-normal-mcv.xml) AND the full-size
+        // `<windowholder id="wdh.vis.object">` on the Visualization tab
+        // (player-normal-sui.xml).  Letting the overlay fall back to the
+        // component slot when the big tab is closed painted a small
+        // visualizer over the album art — exactly what the user reported.
+        // Excluding `component` here means: tab open → overlay on the
+        // windowholder; tab closed → no alive windowholder → overlay
+        // hides (album art shows through).  Skin-agnostic, no per-skin id.
+        const bool isAvs =
+            w->tag == QLatin1String("milkdrop") ||
+            (isAvsWindowSlot(w->tag) &&
+             isAvsGuidRef(w->attrs.value(QStringLiteral("hold")))) ||
+            // An embedded <component param="guid:avs"> is the skin's
+            // chosen inline AVS host (e.g. HeadAMP's InlineAVS).  This is
+            // distinct from Bento's hold=-based mini-vis component (kept
+            // excluded above): param= is Wasabi's spelling for the GUID
+            // of the component a <component> embeds, so a param-AVS
+            // component is an explicit "render AVS here" slot.
+            (w->tag == QLatin1String("component") &&
+             isAvsGuidRef(w->attrs.value(QStringLiteral("param"))));
+        if (isAvs) {
+            const bool alive = w->lastPaintedAtMs > 0 &&
+                               (nowMs - w->lastPaintedAtMs) < 150;
+            const QRect r = w->lastCanvasRect;
+            if (alive && r.width() > 0 && r.height() > 0) {
+                const qint64 area = qint64(r.width()) * r.height();
+                const qint64 bestArea = best
+                    ? qint64(best->lastCanvasRect.width()) *
+                          best->lastCanvasRect.height()
+                    : -1;
+                if (area > bestArea) best = w;
+            }
+        }
+        for (const auto &c : w->children)
+            best = bestAliveAvsSlot(c.get(), nowMs, best);
+        return best;
+    }
+
+    // Per-tick geometry + visibility update for the MilkDrop overlay.
+    // Follows whichever AVS slot the active layout/tab is currently
+    // painting (freshest+largest), hiding when none is alive.
+    void syncMilkdropOverlay() {
+#ifdef QTAMP_WITH_MILKDROP
+        if (!m_milkdropItem) return;
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+
+        // Find the globally best-alive AVS slot across the main window
+        // AND every visible detached subwindow.  There is ONE projectM
+        // instance; it serves whichever window owns the freshest+largest
+        // slot.  The main window gets it via the GL overlay item; a
+        // detached SkinView (a software QWidget with no GL surface of its
+        // own) gets it via CPU readback blitted by its windowholder.
+        auto areaOf = [](const qtWasabi::Widget *w) -> qint64 {
+            if (!w) return -1;
+            return qint64(w->lastCanvasRect.width()) *
+                   w->lastCanvasRect.height();
+        };
+        const qtWasabi::Widget *bestSlot =
+            m_milkdropPlaceholder ? bestAliveAvsSlot(&tree(), nowMs)
+                                  : nullptr;
+        qtWasabi::SkinView *bestOwner = nullptr;   // nullptr = main window
+        for (qtWasabi::SkinView *sv : std::as_const(m_subwindows)) {
+            if (!sv || !sv->isVisible()) continue;
+            const qtWasabi::Widget *s = bestAliveAvsSlot(&sv->tree(), nowMs);
+            if (s && areaOf(s) > areaOf(bestSlot)) {
+                bestSlot = s;
+                bestOwner = sv;
+            }
+        }
+
+        if (std::getenv("WASABIQT_TRACE_MILKDROP")) {
+            if (bestSlot)
+                std::fprintf(stderr,
+                    "[milkdrop] overlay -> owner=%s tag=%s id=%s rect=%dx%d+%d+%d\n",
+                    bestOwner ? "detached" : "main",
+                    bestSlot->tag.toUtf8().constData(),
+                    bestSlot->id.toUtf8().constData(),
+                    bestSlot->lastCanvasRect.width(),
+                    bestSlot->lastCanvasRect.height(),
+                    bestSlot->lastCanvasRect.x(),
+                    bestSlot->lastCanvasRect.y());
+            else
+                std::fprintf(stderr,
+                    "[milkdrop] overlay -> HIDDEN (no alive window-vis slot)\n");
+        }
+
+        if (!bestSlot) {
+            if (m_milkdropItem->isVisible())
+                m_milkdropItem->setVisible(false);
+            m_milkdropItem->setCpuReadbackEnabled(false);
+            m_milkdropItem->setRenderSize(QSize());
+            return;
+        }
+        const QRect r = bestSlot->lastCanvasRect;
+        if (r.width() <= 0 || r.height() <= 0) return;
+
+        if (bestOwner) {
+            // Detached path: the GL overlay can't render into another
+            // window, so render projectM offscreen at the detached slot's
+            // size and let the slot's windowholder blit the readback
+            // frame.  Repaint the owner so the fresh frame lands.
+            if (m_milkdropItem->isVisible())
+                m_milkdropItem->setVisible(false);
+            m_milkdropItem->setRenderSize(r.size());
+            m_milkdropItem->setCpuReadbackEnabled(true);
+            bestOwner->update();
+            return;
+        }
+
+        // Main path: GL overlay renders directly into this window; no
+        // readback, FBO follows the on-screen item size.
+        m_milkdropItem->setCpuReadbackEnabled(false);
+        m_milkdropItem->setRenderSize(QSize());
+        m_milkdropItem->setX(r.x());
+        m_milkdropItem->setY(r.y());
+        m_milkdropItem->setWidth(r.width());
+        m_milkdropItem->setHeight(r.height());
+        if (!m_milkdropItem->isVisible())
+            m_milkdropItem->setVisible(true);
+#endif
+    }
+
+private:
+    // DFS into a Widget subtree looking for the first widget that
+    // declares an AVS visualizer slot.  Cheap (called only at
+    // skin-load time).  Two forms are recognised — both produce the
+    // same observable behaviour because `lastCanvasRect` and
+    // `lastPaintedAtMs` live on the base Widget class:
+    //   1. Explicit `<milkdrop>` tag (qtamp-specific, used by
+    //      skins that want to opt in regardless of GUID convention).
+    //   2. `<windowholder hold="guid:avs">` (or the `wmh` alias) or
+    //      the resolved-GUID form — the canonical Wasabi pattern used
+    //      by Winamp Modern / WinampModernPP.
+    //   3. `<component hold="guid:...">` — Wasabi's OTHER spelling for
+    //      an HWND-host slot.  Bento + Big Bento declare their vis
+    //      panel this way (`<component id="vis" hold="guid:{0000000A-…}">`).
+    //      Widget.cpp already maps the `component` tag to a
+    //      WindowHolderWidget, so the slot paints + bumps
+    //      lastPaintedAtMs; the only gap was THIS tag check not knowing
+    //      the alias, so m_milkdropItem was never built and the Bento /
+    //      Big Bento Visualization tab stayed black.
+    // True when an attribute value (a windowholder's `hold=` or a
+    // component's `param=`) refers to the AVS visualization component —
+    // either by the `guid:avs` alias or its canonical GUID.
+    static bool isAvsGuidRef(const QString &ref) {
+        // Normalise any spelling — `guid:avs`, the `guid:`-prefixed GUID,
+        // or a bare `{0000000A…}` with no prefix (Winamp Modern's detached
+        // vis component uses the bare form) — to the same bare lowercase
+        // key before comparing.  A prefix-only match misses the detached
+        // window's holder and leaves the visualizer black.
+        QString bare = ref.trimmed();
+        if (bare.startsWith(QLatin1String("guid:"), Qt::CaseInsensitive))
+            bare = bare.mid(5).trimmed();
+        bare = bare.toLower();
+        return bare == QLatin1String("avs") ||
+               bare == QLatin1String("{0000000a-000c-0010-ff7b-01014263450c}");
+    }
+    static bool isAvsTag(const QString &tag) {
+        return tag == QLatin1String("windowholder") ||
+               tag == QLatin1String("wmh") ||
+               tag == QLatin1String("component");
+    }
+    // Stricter than isAvsTag: a real visualization *window* slot, used
+    // for OVERLAY PLACEMENT only (see bestAliveAvsSlot).  Excludes
+    // `component`, which is Wasabi's embedded-chrome HWND host (Bento's
+    // small player-display vis) — the GL overlay must never land there.
+    static bool isAvsWindowSlot(const QString &tag) {
+        return tag == QLatin1String("windowholder") ||
+               tag == QLatin1String("wmh");
+    }
+    const qtWasabi::Widget *
+    findAVSPlaceholder(const qtWasabi::Widget *w) const {
+        if (!w) return nullptr;
+        if (w->tag == QLatin1String("milkdrop"))
+            return w;
+        if (isAvsTag(w->tag)) {
+            // Windowholders host the AVS window via `hold=`; <component>
+            // embeds it via `param=` — accept either spelling.
+            if (isAvsGuidRef(w->attrs.value(QStringLiteral("hold"))) ||
+                isAvsGuidRef(w->attrs.value(QStringLiteral("param"))))
+                return w;
+        }
+        for (const auto &c : w->children) {
+            if (auto *hit = findAVSPlaceholder(c.get())) return hit;
+        }
+        return nullptr;
+    }
+public:
 
 public:
     // Programmatic equivalent of clicking a drawer tab.
@@ -1455,9 +3320,9 @@ public:
     void setDrawerOpen(bool open) {
         if (open == m_drawerOpen) return;
         m_drawerOpen = open;
-        auto &mut = const_cast<WasabiQt::Layout::ResolvedWidget &>(tree());
-        std::function<void(WasabiQt::Layout::ResolvedWidget &)> walk =
-            [&](WasabiQt::Layout::ResolvedWidget &w) {
+        auto &mut = const_cast<qtWasabi::Layout::ResolvedWidget &>(tree());
+        std::function<void(qtWasabi::Layout::ResolvedWidget &)> walk =
+            [&](qtWasabi::Layout::ResolvedWidget &w) {
             if (w.id == QStringLiteral("player.normal.drawer")) {
                 w.attrs.insert(QStringLiteral("y"),
                     open ? QStringLiteral("133") : QStringLiteral("17"));
@@ -1524,9 +3389,9 @@ public:
         const QString offOPT = (tab == 2) ? QStringLiteral("0") : QStringLiteral("1");
         const QString onCT   = (tab == 3) ? QStringLiteral("1") : QStringLiteral("0");
         const QString offCT  = (tab == 3) ? QStringLiteral("0") : QStringLiteral("1");
-        auto &mut = const_cast<WasabiQt::Layout::ResolvedWidget &>(tree());
-        std::function<void(WasabiQt::Layout::ResolvedWidget &)> walk =
-            [&](WasabiQt::Layout::ResolvedWidget &w) {
+        auto &mut = const_cast<qtWasabi::Layout::ResolvedWidget &>(tree());
+        std::function<void(qtWasabi::Layout::ResolvedWidget &)> walk =
+            [&](qtWasabi::Layout::ResolvedWidget &w) {
             // Tab on/off variants.
             if (w.id == QStringLiteral("config.tab.eq.on"))           w.attrs.insert("visible", onEQ);
             else if (w.id == QStringLiteral("config.tab.eq.off"))     w.attrs.insert("visible", offEQ);
@@ -1552,18 +3417,42 @@ public:
     // onLeftButtonUp / onMouseMove until release.  Used by widgets
     // with compiled built-in interaction (Menu hover/down state,
     // future Slider drag, ScrollBar thumb grab).
-    WasabiQt::Widget *m_activeWidget = nullptr;
-    WasabiQt::SkinXml::Document m_doc;
-    QHash<QString, WasabiQt::SkinView *> m_subwindows;
+    qtWasabi::Widget *m_activeWidget = nullptr;
+    // Id of m_activeWidget, captured when it's set, so a press→rebuild→release
+    // sequence can tell a live widget from a freed one without dereferencing.
+    QString           m_activeWidgetId;
+    qtWasabi::SkinXml::Document m_doc;
+    QHash<QString, qtWasabi::SkinView *> m_subwindows;
     bool m_drawerOpen = true;
-    // Phase 8 hot-reload — XML/script edits trigger reloadSkin via a
+    // Hot-reload — XML/script edits trigger reloadSkin via a
     // debounced QFileSystemWatcher.  m_runtime is held so reloadSkin
     // can reset() the Maki VM cleanly; nullable to keep the class
     // usable without a runtime (offscreen rendering tests).
-    WasabiQt::SkinRuntime *m_runtime         = nullptr;
+    qtWasabi::SkinRuntime *m_runtime         = nullptr;
+    // Previous player transport state — lets the playbackStateChanged
+    // handler tell a fresh start (onPlay) from un-pausing (onResume).
+    QMediaPlayer::PlaybackState m_prevPlaybackState =
+        QMediaPlayer::StoppedState;
     QFileSystemWatcher    *m_skinWatcher     = nullptr;
     QTimer                *m_reloadDebounce  = nullptr;
     QString                m_hotReloadRoot;
+    // MilkDrop overlay — populated by wireMilkdrop() when the skin
+    // declares an AVS slot.  Recognised forms:
+    //   • Explicit `<milkdrop>` widget tag (qtamp-specific opt-in).
+    //   • `<windowholder hold="guid:avs">` (canonical Wasabi, used by
+    //     Winamp Modern + WinampModernPP and most modern skins).
+    //   • `<windowholder hold="guid:{0000000A-000C-0010-FF7B-…}">`
+    //     (the resolved AVS plugin GUID, used by Bento family).
+    // Type is the base `Widget*` because the placeholder can be any
+    // of the above — the embedder only needs `lastCanvasRect` and
+    // `lastPaintedAtMs`, both inherited from `Widget`.  All pointers
+    // are nullable (skin without an AVS slot, or build without
+    // QTAMP_WITH_MILKDROP).
+    const qtWasabi::Widget         *m_milkdropPlaceholder = nullptr;
+#ifdef QTAMP_WITH_MILKDROP
+    MilkdropItem                   *m_milkdropItem        = nullptr;
+    int                             m_randomCfgSub        = 0;
+#endif
     // Visualisation mode (right-click → Visualization submenu).
     // 0=Off, 1=Spectrum (default), 2=Oscilloscope, 3=VU meter.
     int  m_visMode    = 1;
@@ -1585,12 +3474,12 @@ public:
 
 // ── QtampHost methods that need QtampPlayerWindow to be defined ──
 inline QUrl QtampHost::pickFile(QWidget *embedder) {
-    const QUrl u = WasabiQt::Host::pickFile(embedder);
-    if (!u.isEmpty()) {
-        m_player.setSource(u);
-        m_player.play();
-    }
-    return u;
+    // The "open content" prompt (PLAY on empty / EJECT) is multi-select:
+    // pick one file, many files, or a whole folder's worth via Ctrl+A — not
+    // just a single track.  Returns the first chosen URL for the caller's
+    // recent-files bookkeeping.
+    const QList<QUrl> us = openFilesAndEnqueue(embedder);
+    return us.isEmpty() ? QUrl() : us.first();
 }
 
 // QQuickWindow that hosts the QtampPlayerWindow item.  QtampHost
@@ -1617,12 +3506,10 @@ inline bool QtampHost::toggleShade() {
     // "Shade" mode collapses the player to a thin strip — Winamp's
     // titlebar middle button.  Modern skins normally swap to the
     // `<container id="main"><layout id="shade">...</layout>` layout,
-    // but our window currently hosts only the "normal" layout.  For
-    // now, toggle between the painted-extent-only height (drawer
-    // hidden) and a 30-px-tall preview by manipulating the QQuickWindow's
-    // height directly.  Falls back to no-op-true so the click is
-    // consumed.  TODO: switch to the actual shade layout when the
-    // SkinDoc carries one.
+    // but our window hosts only the "normal" layout, so we toggle
+    // between the painted-extent-only height (drawer hidden) and a
+    // 30-px-tall preview by manipulating the QQuickWindow's height
+    // directly.  Falls back to no-op-true so the click is consumed.
     if (!m_window || !m_window->window()) return true;
     QQuickWindow *w = m_window->window();
     const int curH = w->height();
@@ -1694,20 +3581,36 @@ bool takeFlag(int &argc, char **argv, const char *flag) {
 
 }  // namespace
 
+// gen_ml host installer.  Forward-declared here so we don't drag in
+// the full ml/MlHostWidget.h umbrella from main.cpp.
+namespace qtWasabi { namespace ml { void installMlHostFactory(); } }
+// Real in-player playlist renderer for the Playlist GUID.
+namespace qtWasabi { void installPleditHostFactory(); }
+
 int main(int argc, char *argv[]) {
+  // Register the gen_ml-shaped MlHostRenderer as the canonical ML
+  // windowholder GUID's default backing.  Skin-agnostic — replaces
+  // the flat MediaLibraryPanel substitute for any modern skin
+  // (Bento, Big Bento, WinampModernPP) whose XML references
+  // hold="{6B0EDF80-…}".  A future ported ml.dll-equivalent can
+  // supersede by registering its own factory under the same GUID
+  // before any windowholder paints.
+  qtWasabi::ml::installMlHostFactory();
+  // Register the real playlist renderer for the Playlist component
+  // GUID {45F3F7C1-…}, retiring the PlaylistPro substitute.
+  qtWasabi::installPleditHostFactory();
+
   QString cliModernSkin  = takeModernSkinArg(argc, argv);
   QString cliClassicSkin = takeStringArg(argc, argv, "--classic-skin");
   QString screenshotPath = takeScreenshotArg(argc, argv);
+  // Optional: grab a CONTAINER window (e.g. the Playlist Editor) instead of
+  // the main player, so the offscreen harness can verify subwindow fidelity.
+  QString screenshotContainerRef = takeStringArg(argc, argv,
+                                                 "--screenshot-container");
   const bool listActions = takeFlag(argc, argv, "--list-actions");
-  // Phase 6: opt-in QQuickWindow + SkinQuickItem renderer.  When set,
-  // qtamp creates a frameless transparent QQuickView with a
-  // SkinQuickItem instead of the QWidget-based QtampPlayerWindow.
-  // Drawer/click/setMask/animations all flow through the QML scene
-  // graph.  The existing QWidget path stays the default until the
-  // QML path reaches parity for auxiliary windows + colorthemes UI.
-  // Phase 6 migration: --qml-renderer used to open a parallel
-  // SkinQuickItem preview while QWidget was the primary path.  Now
-  // QML is primary; the flag is silently accepted for backwards
+  // --qml-renderer used to open a parallel SkinQuickItem preview
+  // while QWidget was the primary path.  The QML SkinQuickItem path
+  // is now primary; the flag is silently accepted for backwards
   // compatibility but is a no-op.
   (void)takeFlag(argc, argv, "--qml-renderer");
 
@@ -1722,6 +3625,17 @@ int main(int argc, char *argv[]) {
       QSurfaceFormat::setDefaultFormat(fmt);
   }
 
+  // Force the Qt Quick scene graph onto the OpenGL backend.  Qt 6
+  // defaults to RHI with Vulkan/Metal/D3D, but the MilkDrop overlay
+  // (`src/MilkdropItem`) bridges projectM into the scene graph by
+  // sharing OpenGL textures with the scene graph's GL context — so
+  // the scene graph MUST be running OpenGL for the share to work.
+  // Setting this before QApplication ensures the choice is locked in
+  // before any QQuickWindow gets constructed.
+#ifdef QTAMP_WITH_MILKDROP
+  QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+#endif
+
   QApplication app(argc, argv);
   app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
@@ -1729,8 +3643,7 @@ int main(int argc, char *argv[]) {
 
   // Resolve skin path + renderer kind.  CLI flags win; then saved
   // setting; then a sensible default.  Modern skins are rendered by
-  // qtWasabi; classic skins by the legacy WinampWindow renderer
-  // ported from lord3nd3r/winamp-linux.
+  // qtWasabi; classic skins by the legacy WinampWindow renderer.
   QString modernSkinPath;
   QString classicSkinPath;
   {
@@ -1767,16 +3680,36 @@ int main(int argc, char *argv[]) {
       return 2;
     }
 
-    WasabiQt::SkinXml::Document doc;
+    qtWasabi::SkinXml::Document doc;
     QString err;
-    if (!WasabiQt::SkinXml::parse(skinXml, doc, &err)) {
+    if (!qtWasabi::SkinXml::parse(skinXml, doc, &err)) {
       fprintf(stderr, "qtamp: parse failed: %s\n", err.toLocal8Bit().constData());
       return 3;
     }
 
     auto *host = new QtampHost();
-    // Phase 6 migration: QtampPlayerWindow is a QQuickItem hosted
-    // inside a QQuickWindow declared from QML.  A raw C++-constructed
+
+    // Reuse PlaylistWindow as the modern path's playlist data model.
+    // The widget is never `show()`n — it's purely a track-data holder
+    // that backs the engine-level <playlistpro> renderer through the
+    // qtWasabi::Host playlist accessors.  Library root defaults to
+    // the user's Music dir, again hidden behind the Host abstraction.
+    auto *modernPl = new PlaylistWindow(nullptr);
+    QObject::connect(modernPl, &PlaylistWindow::trackDoubleClicked,
+        [host](const QString &filePath) {
+            host->player().setSource(QUrl::fromLocalFile(filePath));
+            host->player().play();
+        });
+    host->setPlaylist(modernPl);
+    const QString musicDir = QStandardPaths::writableLocation(
+        QStandardPaths::MusicLocation);
+    if (!musicDir.isEmpty() && QDir(musicDir).exists())
+        host->setLibraryRoot(musicDir);
+    else
+        host->setLibraryRoot(QDir::homePath());
+
+    // QtampPlayerWindow is a QQuickItem hosted inside a QQuickWindow
+    // declared from QML.  A raw C++-constructed
     // QQuickWindow doesn't get a valid wl_surface.commit on Wayfire/
     // wlroots (the toplevel never appears in `wlrctl toplevel list`),
     // even though Qt reports the window as visible.  The QML Window
@@ -1790,6 +3723,10 @@ int main(int argc, char *argv[]) {
       return 4;
     }
     view->setSkinDocument(doc);
+    // Apply the saved / preferred colour theme so the player chrome
+    // (frame borders, file-info|playlist divider) renders grey instead
+    // of the flat-black "*Default" identity theme.
+    view->applyPreferredColorTheme();
 
     // Qt.Window | Qt.CustomizeWindowHint = no OS decoration, but
     // still registers as a proper xdg-toplevel.  Qt.FramelessWindow
@@ -1809,6 +3746,13 @@ int main(int argc, char *argv[]) {
     // the window attempts its first render — otherwise the first
     // frame has no content and Wayfire never sees a buffer attach.
     QQmlApplicationEngine engine;
+    // Frameless — Bento paints its own titlebar via standardframe's
+    // `<wasabi.frame.layout>` groupdef (WINAMP wordmark + File/Play/
+    // Options/View/Help menu + restore/maximize/close buttons).
+    // The reference Bento screenshot shows both X11 chrome AND the
+    // skin's own internal titlebar stacked, but on Linux/Wayland we
+    // pick frameless because the OS chrome would overlap the skin's
+    // rendered top region and most users prefer the pure-skin look.
     const QByteArray windowQml =
         "import QtQuick\n"
         "import QtQuick.Window\n"
@@ -1857,11 +3801,23 @@ int main(int argc, char *argv[]) {
     // Set WASABIQT_NO_STATIC_SCRIPTS=1 to skip step 1 (useful for
     // testing whether Maki dispatch alone produces a sane chrome).
     {
-        auto &mutableTree = const_cast<WasabiQt::Layout::ResolvedWidget &>(
+        auto &mutableTree = const_cast<qtWasabi::Layout::ResolvedWidget &>(
             view->tree());
         if (!::getenv("WASABIQT_NO_STATIC_SCRIPTS")) {
             const int layoutW = view->layoutNativeSize().width();
-            WasabiQt::Layout::runKnownScripts(mutableTree, layoutW);
+            qtWasabi::Layout::runKnownScripts(mutableTree, layoutW);
+            // Engine-level stepper wiring (Decrease/Increase
+            // buttons + Display text → sibling cfgattrib slider).
+            qtWasabi::Layout::wireSteppers(mutableTree);
+            // The Maki VM drives the playlist enlarge itself (pledit.m's
+            // playlist_enlarge_attrib + g_playlist.onResize +
+            // playlistpro.frameGroup.onResize), settled to a fixpoint by
+            // SkinRuntime::dispatchInitialResize.  See the
+            // dispatchInitialResize call below.
+            if (::getenv("WASABIQT_TRACE_LAYOUTROOT")) {
+                qtWasabi::Layout::dumpResolved(
+                    mutableTree, view->layoutNativeSize());
+            }
             // The static path mutates widget positions (drawer y,
             // titlebar streaks, …); recompute the window region so
             // sysregion cutouts land where the chrome actually
@@ -1882,13 +3838,89 @@ int main(int argc, char *argv[]) {
         // (useful for visual diffs that should reflect ONLY the
         // static well-known-script path).
         if (!::getenv("WASABIQT_NO_RUNTIME")) {
-            static WasabiQt::SkinRuntime runtime;
+            static qtWasabi::SkinRuntime runtime;
             view->setSkinRuntime(&runtime);
+            // Maki GuiObject.leftClick()/rightClick() action fallback: run the
+            // delegated widget's action through this window's real dispatch.
+            qtWasabi::registerSkinWidgetClickCallback(
+                [view](const QString &id, bool right) -> bool {
+                    return view->triggerWidgetActionById(id, right);
+                });
+            // Maki System.showWindow / hideNamedWindow / isNamedWindowVisible
+            // → the same subwindow machinery the TOGGLE action uses (the
+            // vis/video drawer DETACH buttons in Winamp Modern route here).
+            qtWasabi::registerNamedWindowCallback(
+                [view](const QString &ref, int op) -> int {
+                    int result = 0;
+                    if (op == 1) {                       // show
+                        if (qtWasabi::SkinView *sv = view->ensureSubwindow(ref)) {
+                            sv->show();
+                            sv->raise();
+                            result = 1;
+                        }
+                    } else {
+                        qtWasabi::SkinView *sv = view->peekSubwindow(ref);
+                        if (op == 0 && sv) sv->hide();   // hide
+                        if (sv && sv->isVisible()) {
+                            result = 1;
+                        } else if (op == 2) {
+                            // A DOCKED component (the vis/video hosted in
+                            // the player's drawer holder) counts as visible
+                            // — real Wasabi semantics; the drawer scripts'
+                            // detach flow gates on isNamedWindowVisible
+                            // before showWindow.
+                            const qint64 last =
+                                qtWasabi::holderLastPaintedMs(ref);
+                            if (last > 0 &&
+                                QDateTime::currentMSecsSinceEpoch() - last
+                                    < 400)
+                                result = 1;
+                        }
+                    }
+                    if (qEnvironmentVariableIntValue("WASABIQT_TRACE_MAKI") == 1)
+                        fprintf(stderr, "[namedwindow] op=%d ref=%s -> %d\n",
+                                op, ref.toLocal8Bit().constData(), result);
+                    return result;
+                });
+            // Maki System.setEqBand/getEqBand → host EQ store (drives the EQ
+            // sliders + audio), so a skin's EQ reset / +/- buttons work.
+            qtWasabi::registerSkinEqCallbacks(
+                [h = host, view](int band, int val) {
+                    h->setEqBandValue(band, val);
+                    if (view) view->update();
+                },
+                [h = host](int band) -> int { return h->eqBandValue(band); });
+            // Maki Slider.setPosition/getPosition → host slider axis (drives
+            // scripted balance/volume buttons), keyed by the slider's action=.
+            qtWasabi::registerSkinSliderCallbacks(
+                [h = host, view](const QString &action, const QString &param,
+                                 int v255) {
+                    h->setSliderPosition(
+                        action, qBound(0.0, double(v255) / 255.0, 1.0), param);
+                    if (view) view->update();
+                },
+                [h = host](const QString &action,
+                           const QString &param) -> int {
+                    const double p = h->sliderPosition(action, param);
+                    return p < 0.0 ? -1 : qRound(p * 255.0);
+                });
+            // Maki System.setVolume/getVolume (0..255) → host volume (0..100).
+            qtWasabi::registerSkinVolumeCallbacks(
+                [h = host, view](int v255) {
+                    h->setVolume(qRound(double(v255) / 255.0 * 100.0));
+                    if (qEnvironmentVariableIntValue("WASABIQT_TRACE_MAKI") == 1)
+                        fprintf(stderr, "[volume] System.setVolume(%d) -> %d%%\n",
+                                v255, h->volume());
+                    if (view) view->update();
+                },
+                [h = host]() -> int {
+                    return qRound(double(h->volume()) / 100.0 * 255.0);
+                });
             // Route Maki getStatus() through to the live QMediaPlayer
             // state so playback-state-driven scripts (setposbarvisibility.
             // maki, classicplaystatus.maki, drawer.m) see the real
             // host status instead of a hardcoded default.
-            WasabiQt::registerSkinPlaybackStatusCallback(
+            qtWasabi::registerSkinPlaybackStatusCallback(
                 [h = host]() -> int {
                     if (h->isPlaying()) return 1;
                     if (h->isPaused())  return -1;
@@ -1899,8 +3931,52 @@ int main(int argc, char *argv[]) {
             // the upper video/vis drawer — without this the drawer
             // becomes visible inside the original-sized window and
             // pushes the chrome off-screen.
-            WasabiQt::registerSkinResizeCallback(
-                [view](int w, int h) {
+            // Skin scripts fire startup resize callbacks during their
+            // onScriptLoaded handlers — Bento's maximize.m calls
+            // setWndToScreen() on first launch, which resizes the
+            // window to fill the user's display.  That makes the
+            // chrome (fixed-position widgets) look tiny inside a
+            // huge window and doesn't match what the reference
+            // screenshots show (Bento's native 800x600 size).
+            // Block resize callbacks for the first ~750 ms after
+            // skin load — covers the entire onScriptLoaded /
+            // dispatchInitialResize pass.  User-initiated resize
+            // events (maximize button click, etc.) fire later and
+            // pass through normally.
+            auto resizeUnblockAt =
+                std::make_shared<qint64>(
+                    QDateTime::currentMSecsSinceEpoch() + 750);
+            qtWasabi::registerSkinResizeCallback(
+                [view, resizeUnblockAt](int w, int h) {
+                    if (QDateTime::currentMSecsSinceEpoch() <
+                        *resizeUnblockAt) {
+                        return;  // startup resize — ignore
+                    }
+                    // Maximize: the skin's resize() (e.g. simplemaximize.maki)
+                    // targets ~the screen work-area.  On Wayland a client
+                    // can't position itself, so a plain resize grows the
+                    // window but leaves it off-origin (bottom-right runs off
+                    // screen).  Hand the maximize to the COMPOSITOR, which
+                    // fills AND positions it.  General: any skin whose
+                    // maximize script resizes to the viewport hits this.
+                    if (QQuickWindow *win = view->window()) {
+                        const QRect avail =
+                            QGuiApplication::primaryScreen()
+                                ? QGuiApplication::primaryScreen()
+                                      ->availableGeometry()
+                                : QRect();
+                        if (avail.isValid() && w >= avail.width() - 8 &&
+                            h >= avail.height() - 8) {
+                            if (win->visibility() != QWindow::Maximized)
+                                win->showMaximized();
+                            return;
+                        }
+                        // Restore: leave maximized state before applying the
+                        // smaller size, else the compositor keeps the
+                        // maximized geometry and ignores the resize.
+                        if (win->visibility() == QWindow::Maximized)
+                            win->showNormal();
+                    }
                     // WASABIQT_NO_ANIM=1 forces the snap path (handy
                     // for offscreen test pipelines that grab a single
                     // frame and don't want to wait out a tween).
@@ -1913,7 +3989,15 @@ int main(int argc, char *argv[]) {
                         // consistent.
                         view->animatedResizeLayoutTo(QSize(w, h), 350);
                 });
+            // Plug the bitmap registry into the Maki bridge so layer
+            // widgets' `getAutoWidth/Height` can resolve their bound
+            // bitmaps' intrinsic dimensions (mainmenu.maki et al.).
+            runtime.setBitmapRegistry(&view->registry());
             runtime.loadScripts(doc, mutableTree);
+            // Cache effective resolved rects so Maki getWidth/getHeight
+            // report real pixels for relat-sized widgets (logo holder).
+            mutableTree.cacheResolvedRects(QPoint(0, 0),
+                                           view->layoutNativeSize());
             runtime.dispatchOnScriptLoaded();
             runtime.dispatchXuiParams(mutableTree);
             // Fire the initial onResize on every script that bound a
@@ -1950,7 +4034,7 @@ int main(int argc, char *argv[]) {
       };
       int passed = 0, failed = 0;
       for (const auto &probe : probes) {
-        const auto *hit = WasabiQt::Layout::hitTest(
+        const auto *hit = qtWasabi::Layout::hitTest(
             view->tree(), probe.p, /*actionOnly=*/true,
             qtampImageSize, &view->registry());
         const QByteArray got = hit
@@ -1972,26 +4056,58 @@ int main(int argc, char *argv[]) {
       QSettings s(configPath(), QSettings::IniFormat);
       s.setValue("skin", modernSkinPath);
     }
-    qwin->setTitle("Qtamp — " + QFileInfo(modernSkinPath).fileName());
+    // Reference Bento titlebar says "Winamp" (window-attribute, not
+    // skin chrome).  Keep it short so X11/Wayfire's titlebar text
+    // doesn't wrap.
+    qwin->setTitle(QStringLiteral("Winamp"));
     qwin->resize(view->layoutNativeSize());
-    // Task #76: auto-shrink to painted-region extent after Maki
-    // mutations.  Off by default in qtWasabi so other embedders
-    // preserve explicit Maki sizing; qtamp opts in.
+    // Auto-shrink to painted-region extent after Maki mutations.
+    // Off by default in qtWasabi so other embedders preserve explicit
+    // Maki sizing; qtamp opts in.
     view->setAutoShrinkToRegion(true);
     // (visible: true is set from QML; window is already mapped.)
 
-    // (Phase 6 migration: the QML render path is now PRIMARY.  The
-    // previous `--qml-renderer` opt-in flag opened a parallel mirror
-    // window while QWidget was primary; with the migration complete
-    // the flag is silently accepted for backwards-compat but doesn't
-    // open a second window.)
+    // Resizeable window: when the OS resizes the toplevel, re-resolve the
+    // skin's relat-sized layout to the new size so the chrome scales to
+    // fill it, and re-run the layout passes (album-art square, tabs,
+    // search-header offset).  Guarded against re-entry; resizeLayoutTo
+    // resizes the window to the same size it already is, so no feedback.
+    {
+        auto relayout = [view]() {
+            static bool busy = false;
+            auto *w = view->window();
+            if (busy || !w) return;
+            const QSize ws(w->width(), w->height());
+            if (ws.width() <= 0 || ws.height() <= 0 ||
+                ws == view->layoutNativeSize())
+                return;
+            busy = true;
+            // Free resize must not snap back to the painted extent.
+            view->setAutoShrinkToRegion(false);
+            view->resizeLayoutTo(ws);
+            auto &t = const_cast<qtWasabi::Layout::ResolvedWidget &>(view->tree());
+            // Resolve to the new size, then re-fire the Maki onResize
+            // cascade (faithful Wasabi: a window resize fires onResize, which
+            // re-runs pledit/playlistpro to maintain the enlarged column +
+            // reflow the search header / button bar).
+            t.cacheResolvedRects(QPoint(0, 0), ws);
+            if (auto *rt = view->skinRuntime())
+                rt->dispatchInitialResize(ws.width(), ws.height());
+            view->rebuildWindowRegion();
+            view->update();
+            busy = false;
+        };
+        QObject::connect(qwin, &QQuickWindow::widthChanged,  view,
+                         [relayout](int) { relayout(); });
+        QObject::connect(qwin, &QQuickWindow::heightChanged, view,
+                         [relayout](int) { relayout(); });
+    }
 
-    // Phase 8 hot-reload: opt-in via WASABIQT_HOT_RELOAD=1.  Watches
-    // every XML/Maki source under the skin directory and triggers a
-    // full reload (Maki VM reset + script reload + chrome repaint)
-    // after a 250 ms debounce.  Off by default so offscreen tests
-    // and prod sessions don't pay for inotify watchers + extra reload
-    // surface.
+    // Hot-reload: opt-in via WASABIQT_HOT_RELOAD=1.  Watches every
+    // XML/Maki source under the skin directory and triggers a full
+    // reload (Maki VM reset + script reload + chrome repaint) after a
+    // 250 ms debounce.  Off by default so offscreen tests and prod
+    // sessions don't pay for inotify watchers + extra reload surface.
     if (::getenv("WASABIQT_HOT_RELOAD")) {
         const QString xml = QFileInfo(modernSkinPath).isDir()
             ? QDir(modernSkinPath).filePath("skin.xml")
@@ -2000,6 +4116,69 @@ int main(int argc, char *argv[]) {
         fprintf(stderr,
             "[hot-reload] watching %s\n",
             QFileInfo(xml).absolutePath().toLocal8Bit().constData());
+    }
+
+    // Headless chrome self-test: WASABIQT_SELFTEST_CHROME=<themeName>
+    // verifies the menu-bar prev/next ring and the menu/dialog re-tint,
+    // then quits.  Runs without --screenshot (the chrome is Qt widgets,
+    // not part of the offscreen skin grab).
+    if (const char *st = ::getenv("WASABIQT_SELFTEST_CHROME")) {
+      const QString theme = QString::fromLocal8Bit(st);
+      QTimer::singleShot(400, view, [view, theme]() {
+        view->runChromeSelfTest(theme);
+        QCoreApplication::quit();
+      });
+    }
+
+    // Load positional file/folder args (and --play-file) into modernPl —
+    // the data model the on-skin <playlistpro>/Pledit reads.  This MUST run
+    // in BOTH the live app and the --screenshot path; gating it on the
+    // screenshot branch left `qtamp --modern-skin … <folder>` with an empty
+    // playlist in the live window.  Folders expand to their audio files in
+    // album order (track/disc tags).
+    QStringList modernCliFiles;
+    {
+      const QStringList cliArgs = QCoreApplication::arguments();
+      for (int i = 1; i < cliArgs.size(); ++i) {
+        const QString a = cliArgs.at(i);
+        if (a == QLatin1String("--play-file") && i + 1 < cliArgs.size()) {
+          modernCliFiles << cliArgs.at(++i);
+          continue;
+        }
+        if (a.startsWith(QLatin1Char('-'))) continue;
+        QFileInfo fi(a);
+        if (fi.isDir()) {
+          const QStringList exts = {"*.mp3","*.wav","*.ogg","*.flac",
+                                    "*.m4a","*.aac","*.wma","*.opus"};
+          QStringList dirFiles;
+          for (const QFileInfo &e :
+               QDir(a).entryInfoList(exts, QDir::Files, QDir::Name))
+            dirFiles << e.absoluteFilePath();
+          audiometa::sortByTrack(dirFiles);
+          modernCliFiles << dirFiles;
+        } else if (fi.exists()) {
+          modernCliFiles << fi.absoluteFilePath();
+        }
+      }
+    }
+    const bool modernHasCliMedia =
+        !modernCliFiles.isEmpty() || ::getenv("WASABIQT_PLAY_FILE");
+    if (const char *f = ::getenv("WASABIQT_PLAY_FILE")) {
+      QTimer::singleShot(0, view, [host, modernPl, f]() {
+        const QString path = QString::fromLocal8Bit(f);
+        modernPl->addTrack(path);
+        modernPl->setCurrentTrackIndex(0);
+        host->player().setSource(QUrl::fromLocalFile(path));
+        host->player().play();
+      });
+    } else if (!modernCliFiles.isEmpty()) {
+      QTimer::singleShot(0, view, [host, modernPl, modernCliFiles]() {
+        for (const QString &f : modernCliFiles) modernPl->addTrack(f);
+        modernPl->setCurrentTrackIndex(0);
+        host->player().setSource(
+            QUrl::fromLocalFile(modernCliFiles.first()));
+        host->player().play();
+      });
     }
 
     // Visual-debug pipeline mirroring qtWasabi's render_layout: when
@@ -2016,27 +4195,121 @@ int main(int argc, char *argv[]) {
             QTimer::singleShot(0, view,
               [view, tn]() { view->mousePressEventForTab(tn); });
       }
+      // Engine-tab override (Bento family): write a value directly
+      // to the __tab:active CfgAttribStore key so the visual
+      // harness can screenshot every tab page without simulating
+      // clicks on the (often-invisible-without-Maki) Bento:TabButton
+      // XUI instances.  Index matches the suffix-sorted order
+      // produced by Layout::wireTabs.
+      if (const char *t = ::getenv("WASABIQT_FORCE_ACTIVE_TAB")) {
+        const int tn = QByteArray(t).toInt();
+        QTimer::singleShot(50, view, [tn]() {
+            qtWasabi::CfgAttribStore::instance().set(
+                QStringLiteral("__tab:active"), tn);
+        });
+      }
+      // Debug knob: WASABIQT_FORCE_ATTR="id1:k1=v1;id2:k2=v2;..." —
+      // semicolon-separated triples that force setXmlParam on the
+      // named widget before screenshot.  Lets the visual harness
+      // probe state branches the Maki scripts gate (e.g. force the
+      // video window holder visible to verify the album-art slot
+      // renders without driving the switchto button).
+      if (const char *spec = ::getenv("WASABIQT_FORCE_ATTR")) {
+        const QString s = QString::fromLocal8Bit(spec);
+        QTimer::singleShot(150, view, [s]() {
+            for (const QString &t : s.split(QChar(';'), Qt::SkipEmptyParts)) {
+                const int colon = t.indexOf(QChar(':'));
+                const int eq    = t.indexOf(QChar('='), colon);
+                if (colon < 0 || eq < 0) continue;
+                const QString id  = t.left(colon);
+                const QString k   = t.mid(colon + 1, eq - colon - 1);
+                const QString v   = t.mid(eq + 1);
+                if (auto *w = qtWasabi::Widget::findById(id))
+                    w->setXmlParam(k, v);
+            }
+        });
+      }
       if (::getenv("WASABIQT_DRAWER_CLOSED")) {
         QTimer::singleShot(0, view,
           [view]() { view->setDrawerOpen(false); });
       }
-      // Optional: queue + play a file before the screenshot grab.
-      // Used to verify the chrome at "real" host state (time digits,
-      // kbps/kHz numbers, songticker, vis level) instead of the
-      // bare zero-state default.
-      int screenshotDelayMs = 250;
-      if (const char *f = ::getenv("WASABIQT_PLAY_FILE")) {
-        screenshotDelayMs = 2500;
-        QTimer::singleShot(0, view, [host, f]() {
-          host->player().setSource(QUrl::fromLocalFile(QString::fromLocal8Bit(f)));
-          host->player().play();
-        });
+      // Switch the colour theme AFTER the skin has loaded + painted, to
+      // verify a live gammaset change re-tints the already-rendered skin
+      // (the Preferences picker path), not just the load-time tint.
+      if (const char *lt = ::getenv("WASABIQT_LIVE_THEME")) {
+        const QString th = QString::fromLocal8Bit(lt);
+        QTimer::singleShot(180, view,
+          [view, th]() { view->setActiveGammaset(th); });
+      }
+      // CLI media (positional files/folder, --play-file) is queued into
+      // modernPl unconditionally above; give the grab time to let it load
+      // and the chrome reach "real" host state (time digits, songticker).
+      int screenshotDelayMs = modernHasCliMedia ? 2500 : 250;
+      // Test hook: force a specific colour-theme (gammaset) to probe how
+      // the player frame bevels/dividers render under a boost=1 grey theme
+      // vs the auto-selected *Default (boost=0, near-black borders).
+      if (const char *gs = ::getenv("WASABIQT_GAMMASET")) {
+          const QString name = QString::fromLocal8Bit(gs);
+          QTimer::singleShot(400, view, [view, name]() {
+              fprintf(stderr, "qtamp: setActiveGammaset -> %s\n",
+                      name.toLocal8Bit().constData());
+              view->setActiveGammaset(name);
+          });
+          screenshotDelayMs = qMax(screenshotDelayMs, 900);
+      }
+      // Test hook: switch skins at runtime to reproduce reloadSkin bugs.
+      if (const char *sw = ::getenv("WASABIQT_SWITCH_TO")) {
+          const QString xml = QString::fromLocal8Bit(sw);
+          QTimer::singleShot(800, view, [view, xml]() {
+              fprintf(stderr, "qtamp: reloadSkin -> %s\n",
+                      xml.toLocal8Bit().constData());
+              view->reloadSkin(xml);
+              fprintf(stderr, "qtamp: reloadSkin returned OK\n");
+          });
+          screenshotDelayMs = qMax(screenshotDelayMs, 2000);
+      }
+      // Test hook: synthesise hover moves (use with WASABIQT_TRACE_HOVER
+      // to see which widget the hover hit-test resolves to).
+      if (const char *hv = ::getenv("WASABIQT_HOVER_AT")) {
+          const QString s = QString::fromLocal8Bit(hv);
+          int delay = 60;
+          for (const QString &pt : s.split(';', Qt::SkipEmptyParts)) {
+              const QStringList xy = pt.split(',');
+              if (xy.size() != 2) continue;
+              const QPointF pos(xy[0].toInt(), xy[1].toInt());
+              QTimer::singleShot(delay, view, [view, pos]() {
+                  QHoverEvent he(QEvent::HoverMove, pos, pos, pos);
+                  QCoreApplication::sendEvent(view, &he);
+                  view->update();
+              });
+              delay += 150;
+          }
+          screenshotDelayMs = qMax(screenshotDelayMs, delay + 250);
       }
       // Optional: fire onLeftClick on a widget id before the
       // screenshot.  Lets the visual-test pipeline exercise script-
       // defined button handlers (drawer toggles, mute, etc.)
       // without an actual click event.  Comma-separated lets us
       // chain multiple actions.
+      // Test hook: WASABIQT_TEST_SWITCH_SKIN=<skin.xml or skin dir> —
+      // switch the skin in-app shortly after boot (the Preferences-picker
+      // path), BEFORE any WASABIQT_CLICK_AT fires.  Reproduces live
+      // switch-then-interact flows offscreen (e.g. the HeadAMP drawer
+      // arrows after switching away from Winamp Modern).
+      if (const char *sw = ::getenv("WASABIQT_TEST_SWITCH_SKIN")) {
+        // Comma-separated list switches in sequence (700ms apart) — the
+        // Preferences picker flow, where repeated switches historically
+        // crash (stale per-root globals).
+        const QStringList paths =
+            QString::fromLocal8Bit(sw).split(',', Qt::SkipEmptyParts);
+        int at = 400;
+        for (const QString &raw : paths) {
+          QString p = raw.trimmed();
+          if (QFileInfo(p).isDir()) p += QStringLiteral("/skin.xml");
+          QTimer::singleShot(at, view, [view, p]() { view->reloadSkin(p); });
+          at += 700;
+        }
+      }
       // WASABIQT_CLICK_AT="x,y;x,y" — synthesise full Qt QMouseEvent
       // press+release at the given coords so the click path runs
       // through mousePressEvent (hit-test, fireWidgetEvent, drag
@@ -2045,7 +4318,13 @@ int main(int argc, char *argv[]) {
       if (const char *c = ::getenv("WASABIQT_CLICK_AT")) {
         const QString s = QString::fromLocal8Bit(c);
         const QStringList pts = s.split(';', Qt::SkipEmptyParts);
-        int delay = 50;
+        // First synth click is delayed past the skin's load-time settle +
+        // debounce timers (e.g. suicore's 100ms tempDisable that gates
+        // switchToX), so a tab/tab-drawer click isn't swallowed as a
+        // load-debounce no-op the way a real (seconds-later) click never is.
+        // Override with WASABIQT_CLICK_DELAY.
+        int delay = qEnvironmentVariableIntValue("WASABIQT_CLICK_DELAY");
+        if (delay <= 0) delay = 600;
         for (const QString &pt : pts) {
             const QStringList xy = pt.split(',');
             if (xy.size() != 2) continue;
@@ -2054,14 +4333,11 @@ int main(int argc, char *argv[]) {
             QTimer::singleShot(delay, view, [view, px, py]() {
                 fprintf(stderr, "qtamp: synth click at (%d,%d)\n", px, py);
                 const QPointF pos(px, py);
-                QMouseEvent down(QEvent::MouseButtonPress, pos, pos,
-                    pos, Qt::LeftButton, Qt::LeftButton,
-                    Qt::NoModifier);
-                QMouseEvent up(QEvent::MouseButtonRelease, pos, pos,
-                    pos, Qt::LeftButton, Qt::NoButton,
-                    Qt::NoModifier);
-                QCoreApplication::sendEvent(view, &down);
-                QCoreApplication::sendEvent(view, &up);
+                // Offscreen QQuickItems don't receive synthesised QMouseEvents
+                // through the platform layer, so drive a full press+release
+                // through the REAL handlers (the exact path a live click
+                // takes — capture check, dispatchClickAt, drag fallthrough).
+                view->testClick(pos);
                 view->update();
             });
             delay += 200;
@@ -2100,12 +4376,17 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
                 }
                 qInfo().noquote()
                     << "qtamp: firing onLeftClick on" << spec;
-                if (auto *w = WasabiQt::Widget::findById(spec)) {
-                    WasabiQt::PaintCtx ctx{};
+                if (auto *w = qtWasabi::Widget::findById(spec)) {
+                    qtWasabi::PaintCtx ctx{};
                     w->onLeftButtonDown(QPoint(0, 0), ctx);
                     w->onLeftButtonUp  (QPoint(0, 0), ctx);
                 }
-                WasabiQt::fireWidgetEvent(spec, L"onLeftClick");
+                // Same drawer-mode fixup the real mousePressEvent
+                // path applies, so the offscreen pipeline exercises
+                // the full visible flip when WASABIQT_FIRE_CLICK is
+                // used to click a switchto button by id.
+                view->applyDrawerModeFixup(spec);
+                qtWasabi::fireWidgetEvent(spec, L"onLeftClick");
                 view->update();
             });
             delay += 200;
@@ -2147,7 +4428,7 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
               if (parts.size() == 2)
                   return QPointF(parts[0].toInt(), parts[1].toInt());
           }
-          auto *w = WasabiQt::Widget::findById(spec);
+          auto *w = qtWasabi::Widget::findById(spec);
           if (!w) return QPointF(-1, -1);
           // Find absolute bbox by re-walking the tree in collect mode.
           // Easier: use the topmostWidgetAt by stepping through the
@@ -2183,11 +4464,109 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         });
         screenshotDelayMs = qMax(screenshotDelayMs, 800);
       }
-      QTimer::singleShot(screenshotDelayMs, view, [view, qwin, screenshotPath]() {
+      QTimer::singleShot(screenshotDelayMs, view,
+                         [view, qwin, screenshotPath, screenshotContainerRef]() {
         // QQuickWindow::grabWindow returns the rendered QImage from
         // the scene graph; equivalent of QWidget::grab() for the new
         // QML render path.
         Q_UNUSED(view);
+        // Container capture: build the named subwindow (without showing it)
+        // and grab it via QWidget::grab() — SkinView::paintEvent is
+        // self-contained software compositing, so it renders offscreen with
+        // no compositor.
+        if (!screenshotContainerRef.isEmpty()) {
+            qtWasabi::SkinView *sv = view->ensureSubwindow(screenshotContainerRef);
+            if (!sv) { QCoreApplication::exit(5); return; }
+            sv->resize(sv->layoutNativeSize());
+            const QImage shot = sv->grab().toImage();
+            if (shot.save(screenshotPath)) {
+                qInfo() << "qtamp: wrote" << screenshotPath
+                        << "(" << shot.width() << "x" << shot.height() << ")";
+                QCoreApplication::exit(0);
+            } else {
+                QCoreApplication::exit(5);
+            }
+            return;
+        }
+        // Test hook: WASABIQT_TEST_SUBWIN_RESIZE="<container>:WxH" — build
+        // the named subwindow and resize it BEFORE the main grab, to verify
+        // a subwindow resize cannot reflow the player (per-root scoping of
+        // the Maki onResize cascade).
+        if (const QByteArray sr = qgetenv("WASABIQT_TEST_SUBWIN_RESIZE");
+            !sr.isEmpty()) {
+          const int colon = sr.indexOf(':');
+          if (colon > 0) {
+            if (qtWasabi::SkinView *sv = view->ensureSubwindow(
+                    QString::fromLatin1(sr.left(colon)))) {
+              const QByteArray spec = sr.mid(colon + 1);
+              const auto pump = [](int ms) {
+                QEventLoop el;
+                QTimer::singleShot(ms, &el, &QEventLoop::quit);
+                el.exec();
+              };
+              if (spec == "show") {
+                // Mimic the live "open the PL window" flow (TOGGLE guid:pl):
+                // SHOW the subwindow — the first show delivers an initial
+                // resize/expose, which the bare ensureSubwindow (used by the
+                // screenshot path) never does.
+                sv->show();
+                pump(1200);
+              } else if (spec.startsWith("drag:")) {
+                // Synthesize a REAL bottom-right edge drag through the
+                // SkinView mouse handlers — the faithful replica of the
+                // interactive resize (incl. the edge-press click dispatch
+                // and the manual-resize fallback), unlike a bare resize().
+                const QList<QByteArray> wh = spec.mid(5).split('x');
+                if (wh.size() == 2) {
+                  const QPointF p0(sv->width() - 3, sv->height() - 3);
+                  const int dw = wh[0].trimmed().toInt() - sv->width();
+                  const int dh = wh[1].trimmed().toInt() - sv->height();
+                  auto send = [&](QEvent::Type t, const QPointF &lp) {
+                    QMouseEvent ev(t, lp, sv->mapToGlobal(lp.toPoint()),
+                                   Qt::LeftButton,
+                                   t == QEvent::MouseButtonRelease
+                                       ? Qt::NoButton : Qt::LeftButton,
+                                   Qt::NoModifier);
+                    QCoreApplication::sendEvent(sv, &ev);
+                  };
+                  send(QEvent::MouseButtonPress, p0);
+                  pump(80);
+                  const int kSteps = 6;
+                  for (int i = 1; i <= kSteps; ++i) {
+                    send(QEvent::MouseMove,
+                         p0 + QPointF(dw * i / kSteps, dh * i / kSteps));
+                    pump(120);
+                  }
+                  send(QEvent::MouseButtonRelease,
+                       p0 + QPointF(dw, dh));
+                  pump(200);
+                }
+              } else {
+                // Comma-separated WxH sequence: successive programmatic
+                // resizes with event pumping between steps.
+                for (const QByteArray &step : spec.split(',')) {
+                  const QList<QByteArray> wh = step.split('x');
+                  if (wh.size() != 2) continue;
+                  sv->resize(wh[0].trimmed().toInt(),
+                             wh[1].trimmed().toInt());
+                  pump(150);
+                }
+              }
+            }
+          }
+        }
+        // Test hook: WASABIQT_FORCE_RESIZE=WxH exercises the resize
+        // handler offscreen (the live path is the OS toplevel resize).
+        if (const QByteArray fr = qgetenv("WASABIQT_FORCE_RESIZE"); !fr.isEmpty()) {
+          const QList<QByteArray> wh = fr.split('x');
+          if (wh.size() == 2) {
+            const int fw = wh[0].trimmed().toInt(), fh = wh[1].trimmed().toInt();
+            if (fw > 0 && fh > 0) {
+              qwin->resize(fw, fh);
+              QCoreApplication::processEvents();
+            }
+          }
+        }
         QImage shot = qwin->grabWindow();
         if (shot.save(screenshotPath)) {
           qInfo() << "qtamp: wrote" << screenshotPath
@@ -2372,9 +4751,13 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
         QDir dir(arg);
         QStringList audioExts = {"*.mp3", "*.wav", "*.ogg", "*.flac",
                                  "*.m4a", "*.aac", "*.wma", "*.opus"};
+        QStringList dirFiles;
         for (const QFileInfo &entry :
              dir.entryInfoList(audioExts, QDir::Files, QDir::Name))
-          filesToPlay << entry.absoluteFilePath();
+          dirFiles << entry.absoluteFilePath();
+        // Album-sequence order (track/disc tags), not filename.
+        audiometa::sortByTrack(dirFiles);
+        filesToPlay << dirFiles;
       } else if (fi.exists()) {
         filesToPlay << fi.absoluteFilePath();
       }
