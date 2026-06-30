@@ -207,12 +207,27 @@ endif()
 
 install(TARGETS qtamp RUNTIME DESTINATION bin)
 
-# Skin / language / icon resources lived under skins/, lang/, and
-# packaging/ in the upstream Winamp port.  Those paths originated
-# in the WCL-licensed Llama Group source release and were stripped
-# from Qtamp's git history; restoring them is a future milestone
-# (Qtamp will ship its own MIT-licensed icon set + .desktop file
-# when the packaging pass lands).
+# Bundle the qtWasabi engine library next to the binary; the qtamp
+# RPATH ($ORIGIN/../lib/qtamp) resolves it from there.  Target-based so
+# it picks up the freshly-built .so (with its version symlinks) on a
+# clean build, not just when a prebuilt copy happens to exist.
+if(TARGET qtwasabi)
+    install(TARGETS qtwasabi LIBRARY DESTINATION lib/qtamp)
+endif()
+
+# ── Desktop integration ─────────────────────────────────────────────
+# Freedesktop .desktop launcher (start menu + "Open With" for audio)
+# and the qtamp icon at several sizes.  Generic Exec=`qtamp %U`: with no
+# --modern-skin, qtamp opens the saved skin, falling back to
+# ~/.winamp/skins/Winamp Modern, so the menu entry lands on the modern
+# UI without a hardcoded path.
+install(FILES packaging/linux/qtamp.desktop DESTINATION share/applications)
+install(FILES packaging/linux/icons/qtamp-256.png
+        DESTINATION share/icons/hicolor/256x256/apps RENAME qtamp.png)
+install(FILES packaging/linux/icons/qtamp-128.png
+        DESTINATION share/icons/hicolor/128x128/apps RENAME qtamp.png)
+install(FILES packaging/linux/icons/qtamp-48.png
+        DESTINATION share/icons/hicolor/48x48/apps RENAME qtamp.png)
 
 # ──────────────────────────────────────────────
 # CPack — generate .tar.gz

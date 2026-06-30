@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=qtamp
+GenericName=Music Player
+Comment=Qt-native music player with Winamp Modern (.wal) skins
+Exec=qtamp %U
+TryExec=qtamp
+Icon=qtamp
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+MimeType=audio/mpeg;audio/mp4;audio/flac;audio/x-flac;audio/ogg;audio/x-vorbis+ogg;audio/x-opus+ogg;audio/wav;audio/x-wav;audio/midi;audio/x-mod;application/ogg;
+StartupNotify=true
+Keywords=winamp;skin;milkdrop;visualizer;music;player;
