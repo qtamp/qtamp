@@ -38,7 +38,7 @@ that's us.
   qtamp targets. First time classic skinning + MIDI work
   together on Apple Silicon.
 - **Embeddable engine.** qtamp itself is one consumer of qtWasabi.
-  Anyone else can embed `WasabiQt::Skin` in their own Qt-based
+  Anyone else can embed `qtWasabi::Skin` in their own Qt-based
   player — that's qtWasabi's whole pitch, and qtamp is the
   reference proving it works.
 
@@ -70,9 +70,9 @@ that's us.
 │  ┌──────────────────────────────────────────────────────┐   │
 │  │  UI shell (QMainWindow + QtWidgets fallback chrome)  │   │
 │  │  ┌────────────────────────────────────────────────┐  │   │
-│  │  │  WasabiQt::Skin   (the active loaded skin)     │  │   │
+│  │  │  qtWasabi::Skin   (the active loaded skin)     │  │   │
 │  │  │       │                                        │  │   │
-│  │  │       └── implements WasabiQt::Host  ←─────────┼──┼── │
+│  │  │       └── implements qtWasabi::Host  ←─────────┼──┼── │
 │  │  └────────────────────────────────────────────────┘  │   │
 │  │  ┌──────────────┬───────────────┬─────────────────┐  │   │
 │  │  │ Library      │ Playlist      │ Plugin host     │  │   │
@@ -212,7 +212,7 @@ src/
   playlist/           — playlist model + M3U/XSPF I/O
   plugin/             — plugin host + Qt interfaces
   midi-input/         — RtMidi wrapper, ControlSource adapter
-  skin-host/          — WasabiQt::Host implementation (~40 methods
+  skin-host/          — qtWasabi::Host implementation (~40 methods
                         bridging the skin engine to qtamp's audio,
                         playlist, library)
 plugins/
@@ -250,7 +250,7 @@ skins. Tracking, in dependency order:
 3. **MIDI input plugin** — `in_midi` + FluidSynth, bundled
    fallback SoundFont, `.mid` files play in the playlist
    indistinguishably from MP3s.
-4. **WasabiQt::Host implementation** — implement the ~40-method
+4. **qtWasabi::Host implementation** — implement the ~40-method
    host interface so qtWasabi can ask qtamp for the current
    track, play state, volume, etc.
 5. **First skinned window** — qtWasabi milestone 6 lands
@@ -264,6 +264,25 @@ skins. Tracking, in dependency order:
    Windows.
 8. **Post-1.0** — MIDI controller input (RtMidi), more vis plugins,
    Classic skin support (waiting on qtWasabi).
+
+### Contributing & agents
+
+The cardinal rule everywhere in this stack: **fix the engine, never the
+skin.** There is no per-skin code — thousands of `.wal` skins are the spec,
+so a rendering or behaviour bug is an engine bug and the fix lands in
+qtWasabi where every skin benefits. The vendored Maki VM is bridged, never
+edited.
+
+- [`AGENTS.md`](AGENTS.md) — onboarding for AI coding agents (and humans):
+  the rules, the build + offscreen-test loop, the `WASABIQT_*` knobs, and the
+  commit/submodule conventions.
+- [`wiki/`](wiki/) — a machine-readable knowledge base in Google's
+  **[Open Knowledge Format](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing)**:
+  architecture, components, seams, glossary and conventions, structured for
+  agent consumption.
+- [`deps/qtWasabi/ARCHITECTURE.md`](deps/qtWasabi/ARCHITECTURE.md) and
+  [`CONTRIBUTING.md`](deps/qtWasabi/CONTRIBUTING.md) — the engine internals
+  and conventions.
 
 ### License
 
