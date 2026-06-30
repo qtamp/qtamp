@@ -40,7 +40,7 @@ endif()
 option(QTAMP_USE_QTWASABI "Link qtamp against qtWasabi (Modern skin engine)" OFF)
 if(QTAMP_USE_QTWASABI)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindQtWasabi.cmake)
-    if(QTWASABI_FOUND OR TARGET WasabiQT::WasabiQT OR TARGET wasabiqt)
+    if(QTWASABI_FOUND OR TARGET qtWasabi::qtWasabi OR TARGET qtwasabi)
         message(STATUS "qtWasabi available — Modern skin support enabled")
     else()
         message(WARNING "QTAMP_USE_QTWASABI=ON but qtWasabi not found; run scripts/fetch-deps.sh")
@@ -56,8 +56,38 @@ else()
     message(STATUS "libprojectM not found — MilkDrop visualizations disabled")
 endif()
 
-add_executable(qtamp
+# QTAMP_MILKDROP — build the in-AVS-drawer MilkDrop visualizer
+# overlay against a VENDORED projectM v4 statically linked into the
+# qtamp executable.  We don't use the system libprojectM (Fedora 43
+# only packages v3.1.12, whose incomplete HLSL→GLSL translator makes
+# many MilkDrop 2.x presets render as solid white).  Bundling v4 as
+# a git submodule under deps/projectm and linking it static keeps
+# qtamp self-contained, avoids dragging projectM into qtWasabi (which
+# stays GL-free), and gets us the much-improved v4 shader pipeline +
+# playlist API.
+option(QTAMP_MILKDROP "Build the in-AVS-drawer MilkDrop visualizer overlay (vendored projectM v4 static)" OFF)
+if(QTAMP_MILKDROP)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/projectm/CMakeLists.txt")
+        message(FATAL_ERROR
+            "QTAMP_MILKDROP=ON but deps/projectm submodule not "
+            "checked out.  Run:  git submodule update --init --recursive")
+    endif()
+    # projectM v4 build knobs — static libs, only the renderer +
+    # playlist modules, no SDL test UI / tests / docs.
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_PLAYLIST   ON  CACHE BOOL "" FORCE)
+    set(ENABLE_SDL_UI     OFF CACHE BOOL "" FORCE)
+    set(ENABLE_DEBUG_PRESETS OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTING     OFF CACHE BOOL "" FORCE)
+    set(BUILD_DOCS        OFF CACHE BOOL "" FORCE)
+    set(ENABLE_SYSTEM_GLM OFF CACHE BOOL "" FORCE)
+    set(ENABLE_SYSTEM_PROJECTM_EVAL OFF CACHE BOOL "" FORCE)
+    add_subdirectory(deps/projectm EXCLUDE_FROM_ALL)
+endif()
+
+set(QTAMP_SOURCES
     src/main.cpp
+    src/audiometa.cpp
     src/eq10dsp.cpp
     src/skinutils.cpp
     src/translator.cpp
@@ -75,6 +105,20 @@ add_executable(qtamp
     src/equalizerwindow.cpp
     src/winampwindow.cpp
 )
+if(QTAMP_MILKDROP)
+    list(APPEND QTAMP_SOURCES src/MilkdropItem.cpp)
+endif()
+
+add_executable(qtamp ${QTAMP_SOURCES})
+
+if(QTAMP_MILKDROP)
+    target_compile_definitions(qtamp PRIVATE QTAMP_WITH_MILKDROP)
+    # Static link: projectM v4's renderer (`projectM`) + playlist
+    # (`projectM_playlist`) targets added by the deps/projectm
+    # subdirectory.  Both export public include dirs via
+    # target_include_directories(PUBLIC ...).
+    target_link_libraries(qtamp projectM projectM_playlist)
+endif()
 
 target_include_directories(qtamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -95,9 +139,9 @@ endif()
 
 # qtWasabi link target — define WINAMP_HAVE_WASABIQT so the
 # pre-existing #ifdef sites in src/main.cpp activate the SkinView
-# bring-up path.  Real WasabiQt::Host implementation lands in M5.
+# bring-up path.  Real qtWasabi::Host implementation lands in M5.
 if(QTAMP_USE_QTWASABI)
-    foreach(_target WasabiQT::WasabiQT wasabiqt)
+    foreach(_target qtWasabi::qtWasabi qtwasabi)
         if(TARGET ${_target})
             target_link_libraries(qtamp ${_target})
             target_compile_definitions(qtamp PRIVATE WINAMP_HAVE_WASABIQT)

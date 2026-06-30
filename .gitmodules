@@ -1,3 +1,7 @@
 [submodule "deps/qtWasabi"]
 	path = deps/qtWasabi
 	url = https://github.com/qtWasabi/qtWasabi.git
+[submodule "deps/projectm"]
+	path = deps/projectm
+	url = https://github.com/projectM-visualizer/projectm.git
+	branch = master
