@@ -33,7 +33,7 @@ void fft512(const float *input, float *magnitudes);
 
 // Shared audio analyzer used by both the classic-skin path
 // (WinampWindow::processAudioBuffer) and the modern-skin path
-// (QtampHost → WasabiQt::Host → VisWidget).  Holds the latest
+// (QtampHost → qtWasabi::Host → VisWidget).  Holds the latest
 // spectrum / oscilloscope / VU / level values extracted from the
 // most recent QAudioBuffer.  Feed it from the QAudioBufferOutput
 // callback; consumers read the snapshot at paint time.
@@ -57,6 +57,18 @@ public:
     float vuLeft()  const { return m_vuL; }
     float vuRight() const { return m_vuR; }
     double level()  const { return m_level; }
+    int sampleRate() const { return m_sampleRate; }
+
+    // Drain up to `maxSamples` recent stereo float samples into the
+    // caller-supplied left/right buffers.  Returns the number of
+    // sample-pairs actually written (≤ maxSamples).  Consumed samples
+    // are removed from the internal ring buffer — callers should pull
+    // once per frame and not expect the same data on subsequent calls.
+    //
+    // Used by the optional MilkDrop integration (see src/MilkdropItem)
+    // which needs raw PCM at native rate, not the analyzer's 75-sample
+    // oscilloscope summary.
+    int drainRawPCM(float *outL, float *outR, int maxSamples);
 
 private:
     float  m_spectrum[kSpectrumBands] = {0};
@@ -66,6 +78,18 @@ private:
     float  m_vuR = 0.0f;
     double m_level = 0.0;
     float  m_peakDecay = 0.02f;   // medium
+
+    // Raw stereo PCM ring buffer for MilkDrop.  ~21 ms at 48 kHz is
+    // enough headroom for projectM's 60 Hz pull rate (it grabs the
+    // most recent 512 samples per frame).  Sized larger so brief
+    // stalls don't cause underruns.  Kept as deinterleaved L/R for
+    // direct addPCMfloat() calls.
+    static constexpr int kRawCap = 4096;
+    float  m_rawL[kRawCap] = {0};
+    float  m_rawR[kRawCap] = {0};
+    int    m_rawWrite      = 0;   // next slot to write
+    int    m_rawCount      = 0;   // unread sample pairs (0..kRawCap)
+    int    m_sampleRate    = 44100;
 };
 
 // Winamp visualization colors (24 entries)

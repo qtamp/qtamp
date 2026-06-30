@@ -193,6 +193,8 @@ void AudioAnalyzer::reset() {
     std::fill(std::begin(m_osc),      std::end(m_osc),      0.0f);
     m_vuL = m_vuR = 0.0f;
     m_level = 0.0;
+    m_rawWrite = 0;
+    m_rawCount = 0;
 }
 
 void AudioAnalyzer::setPeakFalloff(int idx) {
@@ -292,6 +294,35 @@ void AudioAnalyzer::feed(const QAudioBuffer &buffer) {
                                  qMax(1, n * 2));
     const double alpha = (rms > m_level) ? 0.5 : 0.15;
     m_level = m_level * (1.0 - alpha) + rms * alpha;
+
+    // Raw stereo ring buffer for any consumer that wants native-rate
+    // PCM (MilkDrop's projectM, in particular).  Appends `frames`
+    // sample-pairs and wraps; oldest unread samples are discarded
+    // once the ring is full.  Cheap enough to do unconditionally —
+    // ~32 KiB cap, simple float copy.
+    m_sampleRate = fmt.sampleRate() > 0 ? fmt.sampleRate() : 44100;
+    for (int i = 0; i < frames; ++i) {
+        m_rawL[m_rawWrite] = leftAt(i);
+        m_rawR[m_rawWrite] = rightAt(i);
+        m_rawWrite = (m_rawWrite + 1) % kRawCap;
+        if (m_rawCount < kRawCap) ++m_rawCount;
+    }
+}
+
+int AudioAnalyzer::drainRawPCM(float *outL, float *outR, int maxSamples) {
+    if (!outL || !outR || maxSamples <= 0 || m_rawCount <= 0) return 0;
+    const int n = qMin(maxSamples, m_rawCount);
+    // Read starting at the oldest unread sample.  `m_rawWrite` is the
+    // NEXT write slot, so the oldest unread is at
+    //   (write - count + cap) % cap.
+    int read = (m_rawWrite - m_rawCount + kRawCap) % kRawCap;
+    for (int i = 0; i < n; ++i) {
+        outL[i] = m_rawL[read];
+        outR[i] = m_rawR[read];
+        read = (read + 1) % kRawCap;
+    }
+    m_rawCount -= n;
+    return n;
 }
 
 QPoint getTextCharPos(QChar ch) {
