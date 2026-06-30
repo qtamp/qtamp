@@ -73,3 +73,6 @@ qrc_*.cpp
 *.swo
 *.orig
 *.bak
+
+# Claude Code agent/session data
+/.claude/
