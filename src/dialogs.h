@@ -147,9 +147,14 @@ class PreferencesDialog : public QDialog {
 public:
     PreferencesDialog(QWidget *parent = nullptr);
 
+    // Populate the Color Theme picker on the Modern Skins page with the
+    // active skin's gammaset names (the embedder owns the registry).
+    void setColorThemes(const QStringList &names, const QString &current);
+
 signals:
     void skinChanged(const QString &skinPath);
     void settingChanged(const QString &key, const QVariant &value);
+    void colorThemeChanged(const QString &name);
 
 private:
     QTreeWidget *treeWidget;
@@ -173,6 +178,7 @@ private:
     void populateSkins();
 
     QListWidget *modernSkinListWidget = nullptr;
+    QComboBox   *colorThemeCombo = nullptr;
     void populateModernSkins();
     void onModernSkinSelected(QListWidgetItem *item);
     void onSkinSelected(QListWidgetItem *item);

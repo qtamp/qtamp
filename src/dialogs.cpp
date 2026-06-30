@@ -951,7 +951,48 @@ QWidget *PreferencesDialog::createModernSkinsPage()
     btnRow->addWidget(openDirBtn);
     btnRow->addStretch();
     layout->addLayout(btnRow);
+
+    // Color Theme picker — the active skin's gammasets (Color Themes).
+    // Populated by the embedder via setColorThemes() once the skin's
+    // registry is known; changing it re-tints the skin (and this dialog)
+    // live through colorThemeChanged.
+    QGroupBox *themeGroup = new QGroupBox("Color Theme", page);
+    QHBoxLayout *themeRow = new QHBoxLayout(themeGroup);
+    themeRow->addWidget(new QLabel("Theme:", themeGroup));
+    colorThemeCombo = new QComboBox(themeGroup);
+    colorThemeCombo->setEnabled(false);   // until populated
+    connect(colorThemeCombo, &QComboBox::currentTextChanged, this,
+            [this](const QString &name) {
+        if (!name.isEmpty()) emit colorThemeChanged(name);
+    });
+    themeRow->addWidget(colorThemeCombo, 1);
+    layout->addWidget(themeGroup);
     return page;
+}
+
+void PreferencesDialog::setColorThemes(const QStringList &names,
+                                       const QString &current)
+{
+    if (!colorThemeCombo) return;
+    QSignalBlocker block(colorThemeCombo);   // don't fire while populating
+    colorThemeCombo->clear();
+    if (names.isEmpty()) {
+        // Color themes are an optional skin feature (a set of <gammaset>
+        // presets).  A skin that ships none — e.g. HeadAMP — has nothing
+        // to switch between; say so instead of showing an empty box.
+        colorThemeCombo->addItem(tr("(this skin has no color themes)"));
+        colorThemeCombo->setEnabled(false);
+        return;
+    }
+    // A "Default colors" entry at the top reverts to the skin's own look
+    // (its native default theme, or no tint at all for a theme-less skin).
+    QStringList items;
+    items << tr("Default colors");
+    items << names;
+    colorThemeCombo->addItems(items);
+    const int idx = items.indexOf(current);
+    colorThemeCombo->setCurrentIndex(idx >= 0 ? idx : 0);
+    colorThemeCombo->setEnabled(true);
 }
 
 QWidget *PreferencesDialog::createPlaybackPage()
