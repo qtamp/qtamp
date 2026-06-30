@@ -198,6 +198,22 @@ public:
     int currentTrackIndex() const { return listWidget->currentRow(); }
     void setCurrentTrackIndex(int index) { if (index >= 0 && index < tracks.size()) listWidget->setCurrentRow(index); }
     QStringList allTracks() const { return tracks; }
+
+    // Pop the playlist-editor button menu (Add / Rem / Sel / Misc / Manage)
+    // for the modern skin's Wasabi `PE_*` chrome buttons, at the cursor.
+    void pleditButtonMenu(const QString &verb);
+
+    // Accessors used by the qtWasabi Host bridge so engine-level
+    // <playlistpro> can paint rows for skins like Bento that have
+    // no per-skin playlist Maki of their own.
+    qint64 trackDurationAt(int index) const {
+        return (index >= 0 && index < trackDurations.size())
+            ? trackDurations[index] : 0;
+    }
+    QString trackDisplayAt(int index) const {
+        return (index >= 0 && index < tracks.size())
+            ? trackDisplayName(index, tracks[index]) : QString();
+    }
     
     // Track navigation convenience methods (called by MPRIS2, tray menu, etc.)
     void nextTrack() {
@@ -297,8 +313,12 @@ private:
     void randomizeList();
     void exploreFolderOfSelected();
     void generateHtmlPlaylist();
-    QString trackDisplayName(int index, const QString &filePath) {
-        return QString("%1. %2").arg(index + 1).arg(QFileInfo(filePath).fileName());
+    QString trackDisplayName(int index, const QString &filePath) const {
+        // "N. Artist - Title" — drop the file extension so rows read like
+        // the reference ("1. Eminem - The Ringer"), not "...mp3".  The
+        // shipped test files are already named "Artist - Title.ext".
+        return QString("%1. %2").arg(index + 1)
+                                .arg(QFileInfo(filePath).completeBaseName());
     }
     void rebuildListDisplay() {
         listWidget->clear();

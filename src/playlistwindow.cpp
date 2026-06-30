@@ -1289,6 +1289,15 @@ void PlaylistWindow::showContextMenu(QPoint globalPos) {
     }
 }
 
+void PlaylistWindow::pleditButtonMenu(const QString &verb) {
+    const QPoint p = QCursor::pos();
+    if (verb == QLatin1String("PE_ADD"))       showAddMenu(p);
+    else if (verb == QLatin1String("PE_REM"))  showRemMenu(p);
+    else if (verb == QLatin1String("PE_SEL"))  showSelMenu(p);
+    else if (verb == QLatin1String("PE_MISC")) showMiscMenu(p);
+    else if (verb == QLatin1String("PE_LIST")) showListMenu(p);
+}
+
 void PlaylistWindow::showAddMenu(QPoint globalPos) {
     QMenu menu;
     menu.setStyleSheet(
