@@ -268,6 +268,16 @@ public:
         QObject::connect(&m_bufOut,
                          &QAudioBufferOutput::audioBufferReceived,
                          this, &QtampHost::onAudioBuffer);
+#if defined(Q_OS_MACOS)
+        // macOS ships only Qt's AVFoundation media backend, which does not
+        // implement QAudioBufferOutput: no decoded buffers are ever
+        // delivered, so the EQ-sink path above stays completely silent.
+        // Attach a direct QAudioOutput so playback works.  The EQ and the
+        // spectrum tap need the FFmpeg backend (buffers), which Homebrew's
+        // Qt does not build, so they are inactive on macOS for now.
+        m_player.setAudioOutput(&m_directOut);
+        m_directOut.setVolume(m_userVolume);
+#endif
 
         // Subscribe to the canonical EQ-enable cfgattrib key
         // (synthesised by ButtonWidget for any button with
@@ -430,6 +440,9 @@ public:
     void setVolume(int v) override {
         m_userVolume = qBound(0, v, 100) / qreal(100);
         if (m_eqSink) m_eqSink->setVolume(m_userVolume);
+#if defined(Q_OS_MACOS)
+        m_directOut.setVolume(m_userVolume);
+#endif
     }
 
     // ── EJECT — pick a file AND start playing it.  Overrides the
@@ -758,6 +771,9 @@ private:
 
     QMediaPlayer  m_player;
     QAudioBufferOutput m_bufOut;
+#if defined(Q_OS_MACOS)
+    QAudioOutput  m_directOut;   // direct playback path (see the constructor)
+#endif
     AudioAnalyzer m_analyzer;
     bool          m_peaksVisible = true;
     int           m_lastChannels   = 0;
