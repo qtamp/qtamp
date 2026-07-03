@@ -37,7 +37,7 @@ quint32 le32(const QByteArray &b, int p) {
 // Parse a raw VORBIS_COMMENT payload (the block body, after any
 // container framing): vendor string then a list of "KEY=value" entries,
 // every length a little-endian u32.  Shared by FLAC and Ogg/Opus.
-void parseVorbisComment(const QByteArray &b, Numbering &out) {
+void parseVorbisComment(const QByteArray &b, Tags &out) {
     int p = 0;
     if (p + 4 > b.size()) return;
     const quint32 vlen = le32(b, p);
@@ -56,16 +56,24 @@ void parseVorbisComment(const QByteArray &b, Numbering &out) {
         if (eq < 0) continue;
         const QString key = QString::fromUtf8(c.left(eq)).toUpper();
         const QString val = QString::fromUtf8(c.mid(eq + 1));
-        if (key == QLatin1String("TRACKNUMBER"))     out.track = firstInt(val);
-        else if (key == QLatin1String("DISCNUMBER")) out.disc  = firstInt(val);
-        else if (key == QLatin1String("ALBUM"))      out.album = val.trimmed();
+        if (key == QLatin1String("TRACKNUMBER"))          out.track = firstInt(val);
+        else if (key == QLatin1String("DISCNUMBER"))      out.disc  = firstInt(val);
+        else if (key == QLatin1String("ALBUM"))           out.album = val.trimmed();
+        else if (key == QLatin1String("ARTIST"))          out.artist = val.trimmed();
+        else if (key == QLatin1String("ALBUMARTIST") ||
+                 key == QLatin1String("ALBUM ARTIST"))    out.albumArtist = val.trimmed();
+        else if (key == QLatin1String("TITLE"))           out.title = val.trimmed();
+        else if (key == QLatin1String("GENRE"))           out.genre = val.trimmed();
+        else if (key == QLatin1String("DATE") ||
+                 key == QLatin1String("YEAR"))            out.year  = firstInt(val);
     }
 }
 
 // FLAC: "fLaC" then a chain of metadata blocks (1-byte type+last flag,
-// 3-byte big-endian length).  Block type 4 is VORBIS_COMMENT.
-Numbering parseFlac(QFile &f) {
-    Numbering out;
+// 3-byte big-endian length).  Block type 0 is STREAMINFO (→ duration),
+// type 4 is VORBIS_COMMENT (→ text tags).
+Tags parseFlac(QFile &f) {
+    Tags out;
     if (!f.seek(4)) return out;
     for (;;) {
         const QByteArray hdr = f.read(4);
@@ -75,11 +83,29 @@ Numbering parseFlac(QFile &f) {
         const quint32 len  = (quint32(quint8(hdr[1])) << 16)
                            | (quint32(quint8(hdr[2])) << 8)
                            | quint32(quint8(hdr[3]));
-        if (type == 4) {
+        if (type == 0) {                              // STREAMINFO
+            const QByteArray si = f.read(int(len));
+            // Bits after the min/max block+frame sizes (10 bytes): a
+            // 64-bit field of sampleRate(20) | channels(3) | bps(5) |
+            // totalSamples(36), big-endian.
+            if (si.size() >= 18) {
+                const quint32 rate = (quint32(quint8(si[10])) << 12)
+                                   | (quint32(quint8(si[11])) << 4)
+                                   | (quint32(quint8(si[12])) >> 4);
+                const quint64 samples =
+                      (quint64(quint8(si[13]) & 0x0F) << 32)
+                    | (quint64(quint8(si[14])) << 24)
+                    | (quint64(quint8(si[15])) << 16)
+                    | (quint64(quint8(si[16])) << 8)
+                    |  quint64(quint8(si[17]));
+                if (rate > 0 && samples > 0)
+                    out.lengthMs = qint64(samples * 1000 / rate);
+            }
+        } else if (type == 4) {                       // VORBIS_COMMENT
             parseVorbisComment(f.read(int(len)), out);
+        } else if (!f.seek(f.pos() + len)) {
             break;
         }
-        if (!f.seek(f.pos() + len)) break;
         if (last) break;
     }
     return out;
@@ -88,8 +114,8 @@ Numbering parseFlac(QFile &f) {
 // Ogg (Vorbis/Opus): the comment header is stored verbatim, so locate
 // the "vorbis"/"OpusTags" signature in the first pages and parse the
 // VORBIS_COMMENT structure that follows.  Bounded read keeps it cheap.
-Numbering parseOgg(QFile &f) {
-    Numbering out;
+Tags parseOgg(QFile &f) {
+    Tags out;
     f.seek(0);
     const QByteArray buf = f.read(64 * 1024);
     int sig = buf.indexOf(QByteArray("\x03vorbis", 7));
@@ -106,8 +132,8 @@ Numbering parseOgg(QFile &f) {
 // MP3: ID3v2 header ("ID3", 2 version bytes, flags, synchsafe size),
 // then text frames.  TRCK = track, TPOS = disc, TALB = album (v2.3/4);
 // TRK/TPA/TAL in the legacy v2.2 3-char ids.
-Numbering parseId3v2(QFile &f) {
-    Numbering out;
+Tags parseId3v2(QFile &f) {
+    Tags out;
     f.seek(0);
     const QByteArray h = f.read(10);
     if (h.size() != 10 || h.left(3) != "ID3") return out;
@@ -164,6 +190,19 @@ Numbering parseId3v2(QFile &f) {
             out.disc = firstInt(decodeText(body));
         else if (ids == QLatin1String("TALB") || ids == QLatin1String("TAL"))
             out.album = decodeText(body).trimmed();
+        else if (ids == QLatin1String("TPE1") || ids == QLatin1String("TP1"))
+            out.artist = decodeText(body).trimmed();
+        else if (ids == QLatin1String("TPE2") || ids == QLatin1String("TP2"))
+            out.albumArtist = decodeText(body).trimmed();
+        else if (ids == QLatin1String("TIT2") || ids == QLatin1String("TT2"))
+            out.title = decodeText(body).trimmed();
+        else if (ids == QLatin1String("TCON") || ids == QLatin1String("TCO"))
+            out.genre = decodeText(body).trimmed();
+        else if (ids == QLatin1String("TYER") || ids == QLatin1String("TYE") ||
+                 ids == QLatin1String("TDRC"))
+            out.year = firstInt(decodeText(body));
+        else if (ids == QLatin1String("TLEN"))
+            out.lengthMs = firstInt(decodeText(body));
     }
     return out;
 }
@@ -173,8 +212,8 @@ Numbering parseId3v2(QFile &f) {
 // 8 bytes of version/flags+reserved then 0x0000, the value, the total.
 // A bounded byte-scan for the item id followed by its `data` atom is
 // robust without walking the whole atom tree.
-Numbering parseMp4(QFile &f) {
-    Numbering out;
+Tags parseMp4(QFile &f) {
+    Tags out;
     f.seek(0);
     const QByteArray buf = f.read(1024 * 1024);   // metadata sits in moov, early
 
@@ -198,8 +237,8 @@ Numbering parseMp4(QFile &f) {
             if (v >= 0) return v;
         }
     };
-    auto albumText = [&]() -> QString {
-        const int idx = buf.indexOf("\xA9""alb");
+    auto textAtom = [&](const char *id) -> QString {
+        const int idx = buf.indexOf(id, 0);
         if (idx < 0) return QString();
         const int data = buf.indexOf("data", idx);
         if (data < 0 || data - idx > 16) return QString();
@@ -217,9 +256,14 @@ Numbering parseMp4(QFile &f) {
         return QString::fromUtf8(buf.mid(textStart, textLen)).trimmed();
     };
 
-    out.track = itemValue("trkn");
-    out.disc  = itemValue("disk");
-    out.album = albumText();
+    out.track       = itemValue("trkn");
+    out.disc        = itemValue("disk");
+    out.album       = textAtom("\xA9""alb");
+    out.artist      = textAtom("\xA9""ART");
+    out.albumArtist = textAtom("aART");
+    out.title       = textAtom("\xA9""nam");
+    out.genre       = textAtom("\xA9""gen");
+    out.year        = firstInt(textAtom("\xA9""day"));
     if (out.track == 0) out.track = -1;   // 0 means "absent" in trkn
     if (out.disc  == 0) out.disc  = -1;
     return out;
@@ -237,7 +281,7 @@ int leadingFilenameNumber(const QString &path) {
 
 }  // namespace
 
-Numbering numbering(const QString &filePath) {
+Tags tags(const QString &filePath) {
     QFile f(filePath);
     if (!f.open(QIODevice::ReadOnly)) return {};
     const QByteArray magic = f.peek(12);
@@ -255,6 +299,11 @@ Numbering numbering(const QString &filePath) {
     if (ext == QLatin1String("m4a") || ext == QLatin1String("mp4") ||
         ext == QLatin1String("aac"))                    return parseMp4(f);
     return {};
+}
+
+Numbering numbering(const QString &filePath) {
+    const Tags t = tags(filePath);
+    return { t.track, t.disc, t.album };
 }
 
 void sortByTrack(QStringList &paths) {

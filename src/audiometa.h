@@ -28,6 +28,27 @@ struct Numbering {
     QString album;
 };
 
+// The full set of tags the Media Library index needs to build its
+// artist → album → track rows.  Strings empty and ints -1 when absent;
+// `lengthMs` is -1 unless the container exposes a duration cheaply
+// (FLAC STREAMINFO; ID3v2 TLEN).  `year` is the leading 4-digit year
+// of DATE / TYER / ©day.
+struct Tags {
+    QString artist;
+    QString albumArtist;
+    QString album;
+    QString title;
+    QString genre;
+    int     track    = -1;
+    int     disc     = -1;
+    int     year     = -1;
+    qint64  lengthMs = -1;
+};
+
+// Read all indexable tags from `filePath`.  Best-effort and synchronous;
+// returns an empty Tags on any read/parse failure.
+Tags tags(const QString &filePath);
+
 // Read the numbering tags from `filePath`.  Best-effort and synchronous;
 // returns an empty Numbering on any read/parse failure.
 Numbering numbering(const QString &filePath);
