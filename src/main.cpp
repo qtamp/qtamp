@@ -2762,7 +2762,13 @@ public:
             "QTabBar::tab { background:%1; color:%2; padding:4px 10px;"
             " border:1px solid %6; }"
             "QTabBar::tab:selected { background:%4; color:%5; }"
-            "QGroupBox { border:1px solid %6; margin-top:6px; }"
+            // Reserve room above the frame for the title and give it its own
+            // position + padding.  Without this the group-box title overlaps
+            // the border and the first row of content once the UI font is
+            // large (macOS defaults to 13pt vs ~9pt on Windows/Linux).
+            "QGroupBox { border:1px solid %6; margin-top:14px; padding-top:8px; }"
+            "QGroupBox::title { subcontrol-origin:margin;"
+            " subcontrol-position:top left; left:10px; padding:0 4px; }"
             "QCheckBox, QRadioButton, QLabel { background:transparent;"
             " color:%2; }")
             .arg(windowBg.name(), windowText.name(), fieldBg.name(),
