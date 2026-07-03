@@ -322,17 +322,22 @@ public:
         // cached user value so the slider doesn't snap to 0.
         return int(qBound(qreal(0), m_userVolume, qreal(1)) * 100);
     }
-    int     channelCount() const override { return m_lastChannels; }
-    int     sampleRate()   const override { return m_lastSampleRate; }
+    int     channelCount() const override { return m_pcmFormat.channelCount(); }
+    int     sampleRate()   const override { return m_pcmFormat.sampleRate(); }
     int     bitrate() const override {
-        // QMediaPlayer exposes the decoded stream's bitrate in
-        // bits-per-second via QMediaMetaData::AudioBitRate; convert
-        // to kbps (host convention) for the kbps display.
-        const QVariant v = m_player.metaData()
-            .value(QMediaMetaData::AudioBitRate);
-        if (!v.isValid()) return 0;
+        // The QAudioDecoder pipeline exposes no container bitrate, so
+        // report the average = file size / duration (what players show
+        // for lossless/VBR anyway).  bytes*8/durationMs is kbps directly.
+        const QUrl src = m_player.source();
+        const qint64 durMs = m_player.duration();
+        if (src.isLocalFile() && durMs > 0) {
+            const qint64 bytes = QFileInfo(src.toLocalFile()).size();
+            if (bytes > 0) return int((bytes * 8) / durMs);
+        }
+        // Fallback: the container bitrate from Qt metadata, if present.
         bool ok = false;
-        const int bps = v.toInt(&ok);
+        const int bps = m_player.metaData()
+            .value(QMediaMetaData::AudioBitRate).toInt(&ok);
         return ok ? bps / 1000 : 0;
     }
     QString songTitle() const override {
