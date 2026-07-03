@@ -265,21 +265,21 @@ public:
         // stopped firing too, so the spectrum went dead).  By
         // never connecting a parallel sink, the device exclusivity
         // stays stable across the whole session.
-        // Audio is decoded with QAudioDecoder and fed through the EQ +
-        // spectrum pipeline into the one always-on QAudioSink.  This is
-        // backend-independent: QMediaPlayer's QAudioBufferOutput is not
-        // implemented by macOS's AVFoundation backend (delivers no
-        // buffers), whereas QAudioDecoder works everywhere.  m_pumpTimer
-        // reads the decoder only while the sink has room, which paces
-        // playback to real time; m_player is kept purely for metadata,
+        // Audio is decoded up front with QAudioDecoder into m_pcm, then the
+        // pump feeds the one always-on QAudioSink from a play cursor at real
+        // time (paced by the sink's free space) through the EQ + spectrum
+        // pipeline.  This is backend-independent (QMediaPlayer's
+        // QAudioBufferOutput isn't implemented by macOS's AVFoundation
+        // backend), and a play cursor over decoded PCM makes seek instant
+        // and track changes gapless.  m_player is kept purely for metadata,
         // duration and cover art (it never plays).
         QObject::connect(&m_decoder, &QAudioDecoder::bufferReady,
-                         this, &QtampHost::pumpDecoder);
+                         this, &QtampHost::onDecodedBuffer);
         QObject::connect(&m_decoder, &QAudioDecoder::finished, this,
-                         [this]{ m_decoding = false; m_pumpTimer.stop(); });
-        m_pumpTimer.setInterval(8);
+                         [this]{ m_decodeDone = true; });
+        m_pumpTimer.setInterval(10);
         QObject::connect(&m_pumpTimer, &QTimer::timeout,
-                         this, &QtampHost::pumpDecoder);
+                         this, &QtampHost::pumpFromPcm);
 
         // Subscribe to the canonical EQ-enable cfgattrib key
         // (synthesised by ButtonWidget for any button with
@@ -306,15 +306,13 @@ public:
     const QMediaPlayer &player() const { return m_player; }
 
     // ── Read state ─────────────────────────────────────────────
-    // Position follows the frames written to the sink (paced to real time
-    // by the pump), offset by the current playback origin (0, or a seek).
+    // Position is the play cursor over the decoded PCM.
     qint64  positionMs() const override {
-        const qint64 played = m_eqSampleRate > 0
-            ? (m_writtenFrames * 1000) / m_eqSampleRate : 0;
-        return m_playOffsetMs + played;
+        const int r = m_pcmFormat.sampleRate();
+        return r > 0 ? (m_cursor * 1000) / r : 0;
     }
     qint64  durationMs() const override { return m_player.duration(); }
-    bool    isPlaying() const override { return m_decoding && !m_paused; }
+    bool    isPlaying() const override { return m_playing && !m_paused; }
     bool    isPaused() const override { return m_paused; }
     int     volume() const override {
         // Volume is owned by the always-on EQ sink (m_eqSink); the
@@ -437,48 +435,50 @@ public:
             m_paused = false;
             if (m_eqSink) m_eqSink->resume();
             m_pumpTimer.start();
-        } else if (!m_decoding && !m_curSource.isEmpty()) {
-            openAndDecode(m_curSource, 0);      // (re)start from the top
+        } else if (!m_playing && !m_curSource.isEmpty()) {
+            openAndDecode(m_curSource);         // (re)start from the top
         }
     }
     void pause() override {
-        if (!m_decoding || m_paused) return;
+        if (!m_playing || m_paused) return;
         m_paused = true;
         m_pumpTimer.stop();
         if (m_eqSink) m_eqSink->suspend();
     }
     void stop()  override {
-        m_decoding = false; m_paused = false;
+        m_playing = false; m_paused = false;
         m_pumpTimer.stop();
         m_decoder.stop();
-        teardownSink();
-        m_writtenFrames = 0; m_playOffsetMs = 0;
+        if (m_eqSink) m_eqSink->suspend();
+        m_cursor = 0;
     }
     // Next/Prev were base-Host no-ops, so the transport Next/Prev buttons
     // did nothing.  Route them through the playlist model (which emits
     // trackDoubleClicked → setSource+play for the new current track).
     void next()  override { if (m_playlist) m_playlist->nextTrack(); }
     void prev()  override { if (m_playlist) m_playlist->prevTrack(); }
-    // QAudioDecoder has no seek, so restart the decode and discard the
-    // decoded audio up to the target before feeding the sink.
+    // Seek is instant: move the cursor over the already-decoded PCM.  If the
+    // decoder has not reached the target yet, clamp to what is decoded.
     void seekMs(qint64 ms) override {
-        if (m_curSource.isEmpty()) return;
-        openAndDecode(m_curSource, qMax<qint64>(0, ms));
+        const int r = m_pcmFormat.sampleRate();
+        if (r <= 0) return;
+        const qint64 f = (qMax<qint64>(0, ms) * r) / 1000;
+        m_cursor = qBound<qint64>(0, f, m_pcmFrames);
     }
 
-    // Central play entry: (re)start decoding `u`, beginning playback at
-    // fromMs (0 = start).  All open/seek call sites funnel through here.
-    void openAndDecode(const QUrl &u, qint64 fromMs = 0) {
+    // Central play entry: decode `u` into m_pcm from the start and play it.
+    // All open call sites funnel through here.  The sink is left in place so
+    // track changes stay gapless (runEqPipeline rebuilds it only on a format
+    // change).
+    void openAndDecode(const QUrl &u) {
         if (u.isEmpty()) return;
         m_curSource = u;
         m_player.setSource(u);                 // metadata / duration / cover only
         m_decoder.stop();
-        teardownSink();                        // rebuild at the new stream's format
-        m_writtenFrames     = 0;
-        m_playOffsetMs      = fromMs;
-        m_seekTargetUs      = fromMs > 0 ? fromMs * 1000 : -1;
-        m_decodedFramesSeek = 0;
-        m_decoding = true; m_paused = false;
+        m_pcm.clear();
+        m_pcmFrames = 0; m_cursor = 0; m_decodeDone = false;
+        m_playing = true; m_paused = false;
+        if (m_eqSink) m_eqSink->resume();      // undo a prior stop's suspend
         m_decoder.setSource(u);
         m_decoder.start();
         m_pumpTimer.start();
@@ -490,26 +490,38 @@ public:
         m_eqSampleRate = 0; m_eqChannels = 0;   // force runEqPipeline to rebuild
     }
 
-    // Pump decoded buffers into the EQ/sink pipeline, but only while the
-    // sink has room — that back-pressure is what paces playback to real
-    // time (the decoder itself runs far faster than real time).
-    void pumpDecoder() {
-        if (!m_decoding || m_paused) return;
+    // Decoder -> m_pcm.  Runs ahead of playback so the whole track lands in
+    // memory, making seeks random-access.
+    void onDecodedBuffer() {
         while (m_decoder.bufferAvailable()) {
-            if (m_eqSink && m_eqSink->bytesFree() < m_eqSink->bufferSize() / 2)
-                break;                          // sink busy; come back next tick
             const QAudioBuffer b = m_decoder.read();
             if (!b.isValid() || b.frameCount() <= 0) continue;
-            const int sr = b.format().sampleRate();
-            if (m_seekTargetUs >= 0 && sr > 0) {
-                const qint64 tgt = (m_seekTargetUs * sr) / 1000000;
-                if (m_decodedFramesSeek + b.frameCount() <= tgt) {
-                    m_decodedFramesSeek += b.frameCount();
-                    continue;                   // discard audio before the seek point
-                }
-                m_seekTargetUs = -1;            // reached the seek target
-            }
-            runEqPipeline(b);                   // EQ + balance + spectrum + sink write
+            if (m_pcmFrames == 0) m_pcmFormat = b.format();
+            m_pcm.append(static_cast<const char *>(b.constData<char>()),
+                         b.byteCount());
+            m_pcmFrames += b.frameCount();
+        }
+    }
+
+    // Feed the sink from the cursor at real time (paced by the sink's free
+    // space), wrapping each PCM chunk in a QAudioBuffer so the existing EQ +
+    // spectrum pipeline processes it.
+    void pumpFromPcm() {
+        if (!m_playing || m_paused) return;
+        const int bpf = m_pcmFormat.bytesPerFrame();
+        if (bpf <= 0) return;
+        const qint64 chunk = 4096;              // frames per write
+        while (m_cursor < m_pcmFrames) {
+            if (m_eqSink && m_eqSink->bytesFree() < m_eqSink->bufferSize() / 2)
+                break;                          // sink busy -> next tick (real-time pace)
+            const qint64 n = qMin(chunk, m_pcmFrames - m_cursor);
+            const QByteArray slice(m_pcm.constData() + m_cursor * bpf, int(n * bpf));
+            runEqPipeline(QAudioBuffer(slice, m_pcmFormat));
+            m_cursor += n;
+        }
+        if (m_decodeDone && m_cursor >= m_pcmFrames) {   // reached the end
+            m_playing = false;
+            m_pumpTimer.stop();
         }
     }
     void setVolume(int v) override {
@@ -841,15 +853,16 @@ private:
     void runEqPipeline(const QAudioBuffer &buf);
 
     QMediaPlayer  m_player;          // metadata / duration / album-art only
-    QAudioDecoder m_decoder;         // decoded-audio source on every backend
-    QTimer        m_pumpTimer;       // paces the decoder to the sink at real time
+    QAudioDecoder m_decoder;         // decodes the whole track into m_pcm
+    QTimer        m_pumpTimer;       // feeds the sink from m_pcm at real time
     QUrl          m_curSource;
-    bool          m_decoding = false;
-    bool          m_paused   = false;
-    qint64        m_seekTargetUs      = -1;  // >=0 while discarding up to a seek point
-    qint64        m_decodedFramesSeek = 0;   // frames decoded while seeking
-    qint64        m_writtenFrames     = 0;   // frames written to the sink this track
-    qint64        m_playOffsetMs      = 0;   // ms of the current playback origin
+    QByteArray    m_pcm;             // whole-track decoded PCM (m_pcmFormat)
+    QAudioFormat  m_pcmFormat;       // format of the samples in m_pcm
+    qint64        m_pcmFrames  = 0;  // frames decoded into m_pcm so far
+    qint64        m_cursor     = 0;  // playback cursor (frames) — drives position + seek
+    bool          m_playing    = false;
+    bool          m_paused     = false;
+    bool          m_decodeDone = false;
     AudioAnalyzer m_analyzer;
     bool          m_peaksVisible = true;
     int           m_lastChannels   = 0;
@@ -988,7 +1001,6 @@ void QtampHost::runEqPipeline(const QAudioBuffer &buf) {
     // Output to the sink (volume already applied via setVolume).
     m_eqSinkDevice->write(reinterpret_cast<const char *>(out.data()),
                            qint64(total) * qint64(sizeof(float)));
-    m_writtenFrames += frames;   // drives positionMs()
     // Feed the EQ'd (pre-balance) samples into the analyzer so the spectrum
     // reflects the EQ but not the output pan.  Float format, lossless.
     QAudioFormat fbufFmt;
