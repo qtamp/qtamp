@@ -58,6 +58,7 @@
 #  include <qtWasabi/CfgAttribStore.h>
 #  include <QAudioBuffer>
 #  include <QAudioBufferOutput>
+#  include <QAudioDecoder>
 #  include <QAudioOutput>
 #  include <QAudioSink>
 #  include <QMediaDevices>
@@ -264,20 +265,21 @@ public:
         // stopped firing too, so the spectrum went dead).  By
         // never connecting a parallel sink, the device exclusivity
         // stays stable across the whole session.
-        m_player.setAudioBufferOutput(&m_bufOut);
-        QObject::connect(&m_bufOut,
-                         &QAudioBufferOutput::audioBufferReceived,
-                         this, &QtampHost::onAudioBuffer);
-#if defined(Q_OS_MACOS)
-        // macOS ships only Qt's AVFoundation media backend, which does not
-        // implement QAudioBufferOutput: no decoded buffers are ever
-        // delivered, so the EQ-sink path above stays completely silent.
-        // Attach a direct QAudioOutput so playback works.  The EQ and the
-        // spectrum tap need the FFmpeg backend (buffers), which Homebrew's
-        // Qt does not build, so they are inactive on macOS for now.
-        m_player.setAudioOutput(&m_directOut);
-        m_directOut.setVolume(m_userVolume);
-#endif
+        // Audio is decoded with QAudioDecoder and fed through the EQ +
+        // spectrum pipeline into the one always-on QAudioSink.  This is
+        // backend-independent: QMediaPlayer's QAudioBufferOutput is not
+        // implemented by macOS's AVFoundation backend (delivers no
+        // buffers), whereas QAudioDecoder works everywhere.  m_pumpTimer
+        // reads the decoder only while the sink has room, which paces
+        // playback to real time; m_player is kept purely for metadata,
+        // duration and cover art (it never plays).
+        QObject::connect(&m_decoder, &QAudioDecoder::bufferReady,
+                         this, &QtampHost::pumpDecoder);
+        QObject::connect(&m_decoder, &QAudioDecoder::finished, this,
+                         [this]{ m_decoding = false; m_pumpTimer.stop(); });
+        m_pumpTimer.setInterval(8);
+        QObject::connect(&m_pumpTimer, &QTimer::timeout,
+                         this, &QtampHost::pumpDecoder);
 
         // Subscribe to the canonical EQ-enable cfgattrib key
         // (synthesised by ButtonWidget for any button with
@@ -304,14 +306,16 @@ public:
     const QMediaPlayer &player() const { return m_player; }
 
     // ── Read state ─────────────────────────────────────────────
-    qint64  positionMs() const override { return m_player.position(); }
+    // Position follows the frames written to the sink (paced to real time
+    // by the pump), offset by the current playback origin (0, or a seek).
+    qint64  positionMs() const override {
+        const qint64 played = m_eqSampleRate > 0
+            ? (m_writtenFrames * 1000) / m_eqSampleRate : 0;
+        return m_playOffsetMs + played;
+    }
     qint64  durationMs() const override { return m_player.duration(); }
-    bool    isPlaying() const override {
-        return m_player.playbackState() == QMediaPlayer::PlayingState;
-    }
-    bool    isPaused() const override {
-        return m_player.playbackState() == QMediaPlayer::PausedState;
-    }
+    bool    isPlaying() const override { return m_decoding && !m_paused; }
+    bool    isPaused() const override { return m_paused; }
     int     volume() const override {
         // Volume is owned by the always-on EQ sink (m_eqSink); the
         // legacy QAudioOutput is no longer used.  Before the sink
@@ -428,21 +432,89 @@ public:
     }
 
     // ── Transport ──────────────────────────────────────────────
-    void play()  override { m_player.play(); }
-    void pause() override { m_player.pause(); }
-    void stop()  override { m_player.stop(); }
+    void play()  override {
+        if (m_paused) {                        // resume
+            m_paused = false;
+            if (m_eqSink) m_eqSink->resume();
+            m_pumpTimer.start();
+        } else if (!m_decoding && !m_curSource.isEmpty()) {
+            openAndDecode(m_curSource, 0);      // (re)start from the top
+        }
+    }
+    void pause() override {
+        if (!m_decoding || m_paused) return;
+        m_paused = true;
+        m_pumpTimer.stop();
+        if (m_eqSink) m_eqSink->suspend();
+    }
+    void stop()  override {
+        m_decoding = false; m_paused = false;
+        m_pumpTimer.stop();
+        m_decoder.stop();
+        teardownSink();
+        m_writtenFrames = 0; m_playOffsetMs = 0;
+    }
     // Next/Prev were base-Host no-ops, so the transport Next/Prev buttons
     // did nothing.  Route them through the playlist model (which emits
     // trackDoubleClicked → setSource+play for the new current track).
     void next()  override { if (m_playlist) m_playlist->nextTrack(); }
     void prev()  override { if (m_playlist) m_playlist->prevTrack(); }
-    void seekMs(qint64 ms) override { m_player.setPosition(ms); }
+    // QAudioDecoder has no seek, so restart the decode and discard the
+    // decoded audio up to the target before feeding the sink.
+    void seekMs(qint64 ms) override {
+        if (m_curSource.isEmpty()) return;
+        openAndDecode(m_curSource, qMax<qint64>(0, ms));
+    }
+
+    // Central play entry: (re)start decoding `u`, beginning playback at
+    // fromMs (0 = start).  All open/seek call sites funnel through here.
+    void openAndDecode(const QUrl &u, qint64 fromMs = 0) {
+        if (u.isEmpty()) return;
+        m_curSource = u;
+        m_player.setSource(u);                 // metadata / duration / cover only
+        m_decoder.stop();
+        teardownSink();                        // rebuild at the new stream's format
+        m_writtenFrames     = 0;
+        m_playOffsetMs      = fromMs;
+        m_seekTargetUs      = fromMs > 0 ? fromMs * 1000 : -1;
+        m_decodedFramesSeek = 0;
+        m_decoding = true; m_paused = false;
+        m_decoder.setSource(u);
+        m_decoder.start();
+        m_pumpTimer.start();
+    }
+
+    void teardownSink() {
+        if (m_eqSink) { m_eqSink->stop(); m_eqSink->deleteLater(); m_eqSink = nullptr; }
+        m_eqSinkDevice = nullptr;
+        m_eqSampleRate = 0; m_eqChannels = 0;   // force runEqPipeline to rebuild
+    }
+
+    // Pump decoded buffers into the EQ/sink pipeline, but only while the
+    // sink has room — that back-pressure is what paces playback to real
+    // time (the decoder itself runs far faster than real time).
+    void pumpDecoder() {
+        if (!m_decoding || m_paused) return;
+        while (m_decoder.bufferAvailable()) {
+            if (m_eqSink && m_eqSink->bytesFree() < m_eqSink->bufferSize() / 2)
+                break;                          // sink busy; come back next tick
+            const QAudioBuffer b = m_decoder.read();
+            if (!b.isValid() || b.frameCount() <= 0) continue;
+            const int sr = b.format().sampleRate();
+            if (m_seekTargetUs >= 0 && sr > 0) {
+                const qint64 tgt = (m_seekTargetUs * sr) / 1000000;
+                if (m_decodedFramesSeek + b.frameCount() <= tgt) {
+                    m_decodedFramesSeek += b.frameCount();
+                    continue;                   // discard audio before the seek point
+                }
+                m_seekTargetUs = -1;            // reached the seek target
+            }
+            runEqPipeline(b);                   // EQ + balance + spectrum + sink write
+        }
+    }
     void setVolume(int v) override {
         m_userVolume = qBound(0, v, 100) / qreal(100);
         if (m_eqSink) m_eqSink->setVolume(m_userVolume);
-#if defined(Q_OS_MACOS)
-        m_directOut.setVolume(m_userVolume);
-#endif
     }
 
     // ── EJECT — pick a file AND start playing it.  Overrides the
@@ -595,8 +667,7 @@ public:
         if (m_playlist) { row = m_playlist->trackCount(); m_playlist->addTrack(path); }
         if (!enqueueOnly) {
             if (m_playlist && row >= 0) m_playlist->setCurrentTrackIndex(row);
-            m_player.setSource(u);
-            m_player.play();
+            openAndDecode(u);
         }
     }
 
@@ -769,11 +840,16 @@ private:
     // class.
     void runEqPipeline(const QAudioBuffer &buf);
 
-    QMediaPlayer  m_player;
-    QAudioBufferOutput m_bufOut;
-#if defined(Q_OS_MACOS)
-    QAudioOutput  m_directOut;   // direct playback path (see the constructor)
-#endif
+    QMediaPlayer  m_player;          // metadata / duration / album-art only
+    QAudioDecoder m_decoder;         // decoded-audio source on every backend
+    QTimer        m_pumpTimer;       // paces the decoder to the sink at real time
+    QUrl          m_curSource;
+    bool          m_decoding = false;
+    bool          m_paused   = false;
+    qint64        m_seekTargetUs      = -1;  // >=0 while discarding up to a seek point
+    qint64        m_decodedFramesSeek = 0;   // frames decoded while seeking
+    qint64        m_writtenFrames     = 0;   // frames written to the sink this track
+    qint64        m_playOffsetMs      = 0;   // ms of the current playback origin
     AudioAnalyzer m_analyzer;
     bool          m_peaksVisible = true;
     int           m_lastChannels   = 0;
@@ -912,6 +988,7 @@ void QtampHost::runEqPipeline(const QAudioBuffer &buf) {
     // Output to the sink (volume already applied via setVolume).
     m_eqSinkDevice->write(reinterpret_cast<const char *>(out.data()),
                            qint64(total) * qint64(sizeof(float)));
+    m_writtenFrames += frames;   // drives positionMs()
     // Feed the EQ'd (pre-balance) samples into the analyzer so the spectrum
     // reflects the EQ but not the output pan.  Float format, lossless.
     QAudioFormat fbufFmt;
@@ -3719,8 +3796,7 @@ int main(int argc, char *argv[]) {
     auto *modernPl = new PlaylistWindow(nullptr);
     QObject::connect(modernPl, &PlaylistWindow::trackDoubleClicked,
         [host](const QString &filePath) {
-            host->player().setSource(QUrl::fromLocalFile(filePath));
-            host->player().play();
+            host->openAndDecode(QUrl::fromLocalFile(filePath));
         });
     host->setPlaylist(modernPl);
     const QString musicDir = QStandardPaths::writableLocation(
@@ -4190,16 +4266,13 @@ int main(int argc, char *argv[]) {
         const QString path = QString::fromLocal8Bit(f);
         modernPl->addTrack(path);
         modernPl->setCurrentTrackIndex(0);
-        host->player().setSource(QUrl::fromLocalFile(path));
-        host->player().play();
+        host->openAndDecode(QUrl::fromLocalFile(path));
       });
     } else if (!modernCliFiles.isEmpty()) {
       QTimer::singleShot(0, view, [host, modernPl, modernCliFiles]() {
         for (const QString &f : modernCliFiles) modernPl->addTrack(f);
         modernPl->setCurrentTrackIndex(0);
-        host->player().setSource(
-            QUrl::fromLocalFile(modernCliFiles.first()));
-        host->player().play();
+        host->openAndDecode(QUrl::fromLocalFile(modernCliFiles.first()));
       });
     }
 
