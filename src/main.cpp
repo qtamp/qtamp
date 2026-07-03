@@ -31,6 +31,7 @@
 
 #include "audiometa.h"
 #include "eq10dsp.h"
+#include "medialibraryindex.h"
 #include "playlistwindow.h"
 #include "skinutils.h"
 #include "translator.h"
@@ -663,7 +664,19 @@ public:
     //    after both objects exist.  The library root is a
     //    filesystem path used as the QDir root for libraryRow*().
     void setPlaylist(PlaylistWindow *pl) { m_playlist = pl; }
-    void setLibraryRoot(const QString &root) { m_libraryRoot = root; }
+    void setLibraryRoot(const QString &root) {
+        m_libraryRoot = root;
+        // Build the tag-indexed Media Library (DuckDB + Parquet) for the
+        // gen_ml artist/album/track panes.  Persisted under the app cache
+        // so a relaunch loads instantly; rescanned each launch to pick up
+        // added files.  A no-op when qtamp is built without DuckDB.
+        if (!root.isEmpty()) {
+            const QString cacheDir = QStandardPaths::writableLocation(
+                QStandardPaths::CacheLocation) + QStringLiteral("/medialibrary");
+            if (m_mlIndex.open(cacheDir))
+                m_mlIndex.rescan(root);
+        }
+    }
 
     // Single funnel for "open a track" intent.  Appends to the Host
     // playlist model (the same model the pledit renderer reads via
@@ -788,6 +801,30 @@ public:
             ? entries[row].isDir() : false;
     }
 
+    // ── Media Library artist/album/track queries, delegating to the
+    //    DuckDB + Parquet index.  Convert the index's value structs to
+    //    the Host row types the gen_ml renderer consumes.
+    QList<MlArtistRow> mlArtists() const override {
+        QList<MlArtistRow> out;
+        for (const auto &a : m_mlIndex.artists())
+            out.append({a.name, a.albumCount, a.trackCount});
+        return out;
+    }
+    QList<MlAlbumRow> mlAlbums(const QString &artist) const override {
+        QList<MlAlbumRow> out;
+        for (const auto &a : m_mlIndex.albums(artist))
+            out.append({a.name, a.year, a.trackCount});
+        return out;
+    }
+    QList<MlTrackRow> mlTracks(const QString &artist, const QString &album) const override {
+        QList<MlTrackRow> out;
+        for (const auto &t : m_mlIndex.tracks(artist, album))
+            out.append({t.artist, t.album, t.title, t.genre,
+                        t.track, t.year, t.lengthMs, t.path});
+        return out;
+    }
+    int mlTotalTracks() const override { return m_mlIndex.totalTracks(); }
+
 private:
     QFileInfoList libraryEntries(const QString &dirPath) const {
         if (dirPath.isEmpty()) return {};
@@ -798,6 +835,7 @@ private:
 
     PlaylistWindow *m_playlist     = nullptr;
     QString         m_libraryRoot;
+    mutable qtamp::MediaLibraryIndex m_mlIndex;
 
 
     // 10 bands + 1 preamp, stored as Winamp 0..63 slider values
