@@ -824,6 +824,17 @@ public:
         return out;
     }
     int mlTotalTracks() const override { return m_mlIndex.totalTracks(); }
+    void mlPlayTracks(const QList<QString> &paths, int startRow,
+                      bool enqueueOnly) override {
+        if (paths.isEmpty() || !m_playlist) return;
+        const int base = m_playlist->trackCount();
+        for (const QString &p : paths) m_playlist->addTrack(p);
+        if (!enqueueOnly) {
+            const int i = qBound(0, startRow, int(paths.size()) - 1);
+            m_playlist->setCurrentTrackIndex(base + i);
+            openAndDecode(QUrl::fromLocalFile(paths.at(i)));
+        }
+    }
 
 private:
     QFileInfoList libraryEntries(const QString &dirPath) const {
