@@ -28,6 +28,11 @@
 /deps/qtWasabi/wasabi-src.7z
 /deps/qtWasabi/*.winamp.tar.gz
 
+# ── DuckDB — vendored prebuilt C library (scripts/fetch-duckdb.sh) ───
+# The Media Library index links libduckdb; the ~60 MB prebuilt binary
+# is fetched per platform, never committed.
+/deps/duckdb/
+
 # ── CMake ───────────────────────────────────────────────────────────
 CMakeCache.txt
 CMakeFiles/

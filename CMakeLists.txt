@@ -85,9 +85,27 @@ if(QTAMP_MILKDROP)
     add_subdirectory(deps/projectm EXCLUDE_FROM_ALL)
 endif()
 
+# ── DuckDB — Media Library index store (DuckDB + Parquet) ───────────
+# The Media Library scans the music folder into a DuckDB table persisted
+# as Parquet.  DuckDB ships no distro package, so a prebuilt C library is
+# vendored under deps/duckdb by scripts/fetch-duckdb.sh.  When absent the
+# index compiles to a no-op (empty library) so the build still succeeds.
+set(QTAMP_DUCKDB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/duckdb")
+if(EXISTS "${QTAMP_DUCKDB_DIR}/libduckdb.so")
+    set(QTAMP_DUCKDB_LIB "${QTAMP_DUCKDB_DIR}/libduckdb.so")
+elseif(EXISTS "${QTAMP_DUCKDB_DIR}/libduckdb.dylib")
+    set(QTAMP_DUCKDB_LIB "${QTAMP_DUCKDB_DIR}/libduckdb.dylib")
+endif()
+if(QTAMP_DUCKDB_LIB)
+    message(STATUS "DuckDB found (${QTAMP_DUCKDB_LIB}) — Media Library index enabled")
+else()
+    message(STATUS "DuckDB not found (run scripts/fetch-duckdb.sh) — Media Library index disabled")
+endif()
+
 set(QTAMP_SOURCES
     src/main.cpp
     src/audiometa.cpp
+    src/medialibraryindex.cpp
     src/eq10dsp.cpp
     src/skinutils.cpp
     src/translator.cpp
@@ -121,6 +139,17 @@ if(QTAMP_MILKDROP)
 endif()
 
 target_include_directories(qtamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# DuckDB link + include (when vendored).  BUILD_RPATH points the dev
+# binary at deps/duckdb; for install the .so is bundled into lib/qtamp
+# which the existing INSTALL_RPATH ($ORIGIN/../lib/qtamp) resolves.
+if(QTAMP_DUCKDB_LIB)
+    target_compile_definitions(qtamp PRIVATE QTAMP_HAVE_DUCKDB)
+    target_include_directories(qtamp PRIVATE ${QTAMP_DUCKDB_DIR})
+    target_link_libraries(qtamp ${QTAMP_DUCKDB_LIB})
+    set_property(TARGET qtamp APPEND PROPERTY BUILD_RPATH "${QTAMP_DUCKDB_DIR}")
+    install(FILES ${QTAMP_DUCKDB_LIB} DESTINATION lib/qtamp)
+endif()
 
 target_link_libraries(qtamp
     Qt${QT_VERSION_MAJOR}::Core
