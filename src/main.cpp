@@ -3532,9 +3532,15 @@ public:
         // Compact height covers chrome + the open-button tab that
         // pokes out at the bottom: drawer.y(=17) + button.relY(=118)
         // + button.h(~7) + a couple px of padding.
+        //
+        // Only the small player layouts (WACUP-style, ~185/105 px tall)
+        // shrink like this.  The big Bento layout (h≈600, with the docked
+        // Media Library below) keeps the drawer INTERNAL — collapsing that
+        // window to the drawer-tab height clipped off the whole player.
+        // So leave a large layout's window size alone.
         const QSize full = layoutNativeSize();
         const int compactH = 17 + 118 + 7 + 2;  // 144 px
-        if (auto *w = window()) {
+        if (auto *w = window(); w && full.height() < 300) {
             w->setMinimumSize(QSize(0, 0));
             w->setMaximumSize(QSize(16777215, 16777215));
             w->resize(full.width(), open ? full.height() : compactH);
