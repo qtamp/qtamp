@@ -4735,6 +4735,23 @@ if (const char *c = ::getenv("WASABIQT_FIRE_CLICK")) {
           }
         }
         QImage shot = qwin->grabWindow();
+        // WASABIQT_SHOT_ALPHA=1 — cut the grab to the skin's shaped window
+        // region (the same region the compositor clips to live), leaving
+        // everything outside fully transparent.  For marketing/press shots
+        // of shaped skins on a transparent background.
+        if (qEnvironmentVariableIntValue("WASABIQT_SHOT_ALPHA") == 1) {
+          shot = shot.convertToFormat(QImage::Format_ARGB32);
+          const QRegion reg = view->windowRegion();
+          if (!reg.isEmpty()) {
+            QImage cut(shot.size(), QImage::Format_ARGB32);
+            cut.fill(Qt::transparent);
+            QPainter cp(&cut);
+            cp.setClipRegion(reg);
+            cp.drawImage(0, 0, shot);
+            cp.end();
+            shot = cut;
+          }
+        }
         if (shot.save(screenshotPath)) {
           qInfo() << "qtamp: wrote" << screenshotPath
                   << "(" << shot.width() << "x" << shot.height() << ")";
