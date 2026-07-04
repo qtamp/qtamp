@@ -4386,6 +4386,32 @@ int main(int argc, char *argv[]) {
                          [relayout](int) { relayout(); });
     }
 
+#ifdef QTAMP_WASM
+    // The skin window is far smaller than its browser container (the
+    // page/modal), and Qt for WebAssembly pins a window to its origin,
+    // so it booted top-left.  Centre it on the screen (= the container)
+    // and re-centre whenever its own size changes (the auto-shrink
+    // settles to the painted extent) or the container resizes (a phone
+    // rotating, the modal reflowing).
+    {
+        auto centerOnScreen = [qwin]() {
+            auto *scr = QGuiApplication::primaryScreen();
+            if (!scr) return;
+            const QRect g = scr->geometry();
+            qwin->setPosition(qMax(0, (g.width()  - qwin->width())  / 2),
+                              qMax(0, (g.height() - qwin->height()) / 2));
+        };
+        centerOnScreen();
+        QObject::connect(qwin, &QQuickWindow::widthChanged,  qwin,
+                         [centerOnScreen](int) { centerOnScreen(); });
+        QObject::connect(qwin, &QQuickWindow::heightChanged, qwin,
+                         [centerOnScreen](int) { centerOnScreen(); });
+        if (auto *scr = QGuiApplication::primaryScreen())
+            QObject::connect(scr, &QScreen::geometryChanged, qwin,
+                             [centerOnScreen](const QRect &) { centerOnScreen(); });
+    }
+#endif
+
     // Hot-reload: opt-in via WASABIQT_HOT_RELOAD=1.  Watches every
     // XML/Maki source under the skin directory and triggers a full
     // reload (Maki VM reset + script reload + chrome repaint) after a
