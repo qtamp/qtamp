@@ -487,10 +487,60 @@ public:
         m_pcmFrames = 0; m_cursor = 0; m_decodeDone = false;
         m_playing = true; m_paused = false;
         if (m_eqSink) m_eqSink->resume();      // undo a prior stop's suspend
+#ifdef QTAMP_WASM
+        // Qt's WebAssembly multimedia backend ships no QAudioDecoder
+        // ("Not available"), and the browser demo only ever plays its
+        // bundled PCM WAV.  Parse the RIFF header directly into the
+        // existing m_pcm pipeline; everything downstream (pump, EQ DSP,
+        // QAudioSink via Web Audio) is unchanged.
+        if (loadWavIntoPcm(u)) { m_pumpTimer.start(); return; }
+#endif
         m_decoder.setSource(u);
         m_decoder.start();
         m_pumpTimer.start();
     }
+
+#ifdef QTAMP_WASM
+    // Minimal RIFF/WAVE PCM16 reader for the bundled demo track.  Fills
+    // m_pcm / m_pcmFormat / m_pcmFrames the same way onDecodedBuffer does.
+    bool loadWavIntoPcm(const QUrl &u) {
+        QString path = u.isLocalFile() ? u.toLocalFile() : u.toString();
+        if (path.startsWith(QStringLiteral("qrc:")))
+            path = path.mid(3);                 // qrc:/x -> :/x
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) return false;
+        const QByteArray riff = f.read(12);
+        if (riff.size() != 12 || !riff.startsWith("RIFF") || riff.mid(8, 4) != "WAVE")
+            return false;
+        int channels = 0, rate = 0, bits = 0;
+        while (!f.atEnd()) {
+            const QByteArray ch = f.read(8);
+            if (ch.size() != 8) break;
+            const quint32 len = quint32(quint8(ch[4])) | (quint32(quint8(ch[5])) << 8)
+                              | (quint32(quint8(ch[6])) << 16) | (quint32(quint8(ch[7])) << 24);
+            if (ch.startsWith("fmt ")) {
+                const QByteArray fmt = f.read(len);
+                if (fmt.size() < 16) return false;
+                channels = quint8(fmt[2]) | (quint8(fmt[3]) << 8);
+                rate = quint8(fmt[4]) | (quint8(fmt[5]) << 8)
+                     | (quint8(fmt[6]) << 16) | (quint8(fmt[7]) << 24);
+                bits = quint8(fmt[14]) | (quint8(fmt[15]) << 8);
+            } else if (ch.startsWith("data")) {
+                if (channels <= 0 || rate <= 0 || bits != 16) return false;
+                m_pcm = f.read(len);
+                m_pcmFormat.setSampleRate(rate);
+                m_pcmFormat.setChannelCount(channels);
+                m_pcmFormat.setSampleFormat(QAudioFormat::Int16);
+                m_pcmFrames = m_pcm.size() / m_pcmFormat.bytesPerFrame();
+                m_decodeDone = true;
+                return m_pcmFrames > 0;
+            } else {
+                f.seek(f.pos() + len + (len & 1));
+            }
+        }
+        return false;
+    }
+#endif
 
     void teardownSink() {
         if (m_eqSink) { m_eqSink->stop(); m_eqSink->deleteLater(); m_eqSink = nullptr; }
@@ -4342,6 +4392,12 @@ int main(int argc, char *argv[]) {
           modernCliFiles << fi.absoluteFilePath();
         }
       }
+#ifdef QTAMP_WASM
+      // Queue the bundled demo loop like a CLI file argument; the user's
+      // Play click inside the skin doubles as the browser's audio gesture.
+      if (modernCliFiles.isEmpty())
+          modernCliFiles << QStringLiteral(":/demo.wav");
+#endif
     }
     const bool modernHasCliMedia =
         !modernCliFiles.isEmpty() || ::getenv("WASABIQT_PLAY_FILE");
