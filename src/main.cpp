@@ -1419,22 +1419,12 @@ public:
                 [this](const QUrl &) { fireTitleChange(); update(); });
         connect(&host->player(), &QMediaPlayer::playbackStateChanged,
                 this, [this](QMediaPlayer::PlaybackState st) {
-            // Drive the Maki System playback callbacks so skins can swap
-            // their play/pause chrome (HeadAMP overlays a Play and a
-            // Pause button at the same spot, toggling visibility on
-            // System.onPlay/onResume/onPause/onStop).  Resumed vs Playing
-            // is distinguished by the previous state.
-            using PS = qtWasabi::SkinRuntime::PlaybackState;
-            if (m_runtime) {
-                if (st == QMediaPlayer::PlayingState)
-                    m_runtime->dispatchPlaybackState(
-                        m_prevPlaybackState == QMediaPlayer::PausedState
-                            ? PS::Resumed : PS::Playing);
-                else if (st == QMediaPlayer::PausedState)
-                    m_runtime->dispatchPlaybackState(PS::Paused);
-                else
-                    m_runtime->dispatchPlaybackState(PS::Stopped);
-            }
+            // The Maki System playback callbacks (onPlay/onResume/
+            // onPause/onStop) are fired by the engine itself from the
+            // same host status System.getStatus() reads — QMediaPlayer
+            // here only carries metadata, the audible pipeline is the
+            // decoder/sink pair, so dispatching from this signal both
+            // missed real transport changes and could double-fire.
             m_prevPlaybackState = st;
             update();
         });
