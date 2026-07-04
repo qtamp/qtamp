@@ -149,17 +149,22 @@ endif()
 if(QTAMP_WASM)
     target_compile_definitions(qtamp PRIVATE QTAMP_WASM)
     # Grow the heap on demand; the skin + decoded demo PCM need headroom.
-    target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB
-        # The Maki dispatch is signature-exact since the (class,method)
-        # keystone: callDLF invokes every binding at its registered
-        # arity, so the function-pointer cast emulation is gone — and
-        # with it the WASM_BIGINT=0 rewrite the emulation forced (Qt's
-        # default BigInt i64 ABI applies again).  ASYNCIFY gives Qt a
-        # real suspension point for QEventLoop::exec() in the browser:
-        # dialogs and the shade-mode switch stop aborting.  The stack
-        # holds the deepest suspended call chain; Qt's event dispatch
-        # needs more than the 4K default.
-        -sASYNCIFY -sASYNCIFY_STACK_SIZE=65536)
+    target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB)
+    # The Maki dispatch is signature-exact since the (class,method)
+    # keystone: callDLF invokes every binding at its registered arity,
+    # so EMULATE_FUNCTION_POINTER_CASTS is gone — the class of "function
+    # signature mismatch" traps it existed for (including the shade-mode
+    # switch script) no longer happens.  Dropping it also removes the
+    # WASM_BIGINT=0 rewrite the emulation forced, so Qt's default i64
+    # ABI applies again.
+    #
+    # ASYNCIFY (the classic route to a synchronous QDialog::exec() in
+    # the browser) is deliberately NOT enabled: it instruments nearly
+    # every function and pushed the -Oz binary from ~24 MiB to 37 MiB,
+    # past Cloudflare Pages' 25 MiB per-file limit.  The hero player has
+    # no modal dialogs on its critical path, so the size cost is not
+    # worth it; if a future feature needs sync suspension, scope it with
+    # ASYNCIFY_ONLY or move to JSPI rather than instrumenting the world.
     # Static Qt cannot load QML module plugins at runtime, and the window
     # QML lives in a C++ string the import scanner cannot see. Shell.qml
     # declares the imports (QtQuick, QtQuick.Window) so
