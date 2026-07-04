@@ -337,6 +337,18 @@ public:
             const qint64 bytes = QFileInfo(src.toLocalFile()).size();
             if (bytes > 0) return int((bytes * 8) / durMs);
         }
+        // PCM path: the decoded format IS the bitrate (sampleRate *
+        // channels * bits).  The browser demo track is a qrc: resource
+        // (not a local file) and a WAV carries no AudioBitRate metadata,
+        // so without this the kbps field read 0; this reports the true
+        // 1411 kbps for the bundled 44.1 kHz/16-bit stereo demo.
+        if (m_pcmFrames > 0 && m_pcmFormat.isValid()) {
+            const int rate  = m_pcmFormat.sampleRate();
+            const int chans = m_pcmFormat.channelCount();
+            const int bytes = m_pcmFormat.bytesPerFrame();
+            if (rate > 0 && chans > 0 && bytes > 0)
+                return int((qint64(rate) * bytes * 8) / 1000);
+        }
         // Fallback: the container bitrate from Qt metadata, if present.
         bool ok = false;
         const int bps = m_player.metaData()
