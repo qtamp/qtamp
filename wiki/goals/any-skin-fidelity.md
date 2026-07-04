@@ -1,7 +1,7 @@
 ---
 type: Goal
 id: goals/any-skin-fidelity
-title: qtamp's role in the one goal — reference embedder, never a second engine
+title: "qtamp's role in the one goal: reference embedder, never a second engine"
 description: >
   The embedder-side view of qtWasabi's governing goal (every skin ever built
   or yet to be built for original Winamp, rendered by the original Maki VM).

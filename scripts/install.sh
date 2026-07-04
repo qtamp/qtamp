@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# qtamp universal installer — `curl https://qtamp.sh | sh`
+# qtamp universal installer: `curl https://qtamp.sh | sh`
 #
 # Detects the host OS and installs qtamp, the reference player for
 # qtWasabi (the open-source reimplementation of the Wasabi/Maki Modern
@@ -36,7 +36,7 @@ OS="$(uname -s)"
 
 # ── macOS: hand off to the dedicated .app installer ─────────────────
 if [ "$OS" = "Darwin" ]; then
-    say "macOS detected — fetching the qtamp .app installer"
+    say "macOS detected, fetching the qtamp .app installer"
     exec /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/qtamp/qtamp/main/scripts/install-macos.sh)"
 fi
 
@@ -58,7 +58,7 @@ elif command -v zypper >/dev/null 2>&1; then
     sudo zypper install -y cmake gcc-c++ git curl p7zip ninja \
         qt6-base-devel qt6-multimedia-devel qt6-declarative-devel
 else
-    die "no supported package manager found (dnf/apt/pacman/zypper) — install Qt6 (base, multimedia, declarative), cmake, ninja, git, p7zip manually, then re-run"
+    die "no supported package manager found (dnf/apt/pacman/zypper). Install Qt6 (base, multimedia, declarative), cmake, ninja, git, p7zip manually, then re-run"
 fi
 
 # ── Sources ──────────────────────────────────────────────────────────

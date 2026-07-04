@@ -35,7 +35,7 @@ touching code.
 
 ## Sections
 
-- [Goals](goals/any-skin-fidelity.md) — the one goal (every skin, past and
+- [Goals](goals/any-skin-fidelity.md): the one goal (every skin, past and
   future, rendered through the original Maki VM) seen from the embedder
   side. The full goal statement, the fidelity audit, and the convergence
   roadmap live in the engine's own OKF bundle at `deps/qtWasabi/okf/`.
