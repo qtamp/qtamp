@@ -158,7 +158,7 @@ if(QTAMP_MILKDROP)
     # (`projectM_playlist`) targets added by the deps/projectm
     # subdirectory.  Both export public include dirs via
     # target_include_directories(PUBLIC ...).
-    target_link_libraries(qtamp projectM projectM_playlist)
+    target_link_libraries(qtamp PRIVATE projectM projectM_playlist)
 endif()
 
 target_include_directories(qtamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -169,12 +169,12 @@ target_include_directories(qtamp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 if(QTAMP_DUCKDB_LIB)
     target_compile_definitions(qtamp PRIVATE QTAMP_HAVE_DUCKDB)
     target_include_directories(qtamp PRIVATE ${QTAMP_DUCKDB_DIR})
-    target_link_libraries(qtamp ${QTAMP_DUCKDB_LIB})
+    target_link_libraries(qtamp PRIVATE ${QTAMP_DUCKDB_LIB})
     set_property(TARGET qtamp APPEND PROPERTY BUILD_RPATH "${QTAMP_DUCKDB_DIR}")
     install(FILES ${QTAMP_DUCKDB_LIB} DESTINATION lib/qtamp)
 endif()
 
-target_link_libraries(qtamp
+target_link_libraries(qtamp PRIVATE
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Gui
     Qt${QT_VERSION_MAJOR}::Widgets
@@ -185,7 +185,7 @@ target_link_libraries(qtamp
 # Qt6 splits OpenGLWidgets into its own module; Qt5 includes it in Widgets.
 # Qt::Quick + Qt::Qml drive the --qml-renderer SkinQuickItem preview.
 if(QT_VERSION_MAJOR EQUAL 6)
-    target_link_libraries(qtamp Qt6::OpenGLWidgets Qt6::Quick Qt6::Qml)
+    target_link_libraries(qtamp PRIVATE Qt6::OpenGLWidgets Qt6::Quick Qt6::Qml)
 endif()
 
 
@@ -195,7 +195,7 @@ endif()
 if(QTAMP_USE_QTWASABI)
     foreach(_target qtWasabi::qtWasabi qtwasabi)
         if(TARGET ${_target})
-            target_link_libraries(qtamp ${_target})
+            target_link_libraries(qtamp PRIVATE ${_target})
             target_compile_definitions(qtamp PRIVATE WINAMP_HAVE_WASABIQT)
             break()
         endif()
@@ -211,7 +211,7 @@ set_target_properties(qtamp PROPERTIES
 
 # Conditionally link projectM if available
 if(PROJECTM_LIB)
-    target_link_libraries(qtamp ${PROJECTM_LIB})
+    target_link_libraries(qtamp PRIVATE ${PROJECTM_LIB})
     target_compile_definitions(qtamp PRIVATE HAVE_PROJECTM)
 
     # Bundle libprojectM and its non-standard dependencies
@@ -250,10 +250,10 @@ endif()
 
 # Conditionally link Qt DBus if available
 if(QT_VERSION_MAJOR EQUAL 6 AND Qt6DBus_FOUND)
-    target_link_libraries(qtamp Qt6::DBus)
+    target_link_libraries(qtamp PRIVATE Qt6::DBus)
     target_compile_definitions(qtamp PRIVATE QT_DBUS_LIB)
 elseif(QT_VERSION_MAJOR EQUAL 5 AND Qt5DBus_FOUND)
-    target_link_libraries(qtamp Qt5::DBus)
+    target_link_libraries(qtamp PRIVATE Qt5::DBus)
     target_compile_definitions(qtamp PRIVATE QT_DBUS_LIB)
 endif()
 
