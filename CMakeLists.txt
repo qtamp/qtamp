@@ -150,6 +150,16 @@ if(QTAMP_WASM)
     target_compile_definitions(qtamp PRIVATE QTAMP_WASM)
     # Grow the heap on demand; the skin + decoded demo PCM need headroom.
     target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB)
+    # Static Qt cannot load QML module plugins at runtime, and the window
+    # QML lives in a C++ string the import scanner cannot see. Shell.qml
+    # declares the imports (QtQuick, QtQuick.Window) so
+    # qt_import_qml_plugins bakes those plugins into the binary.
+    qt_add_qml_module(qtamp
+        URI QtampShell
+        VERSION 1.0
+        QML_FILES wasm/Shell.qml
+    )
+    qt_import_qml_plugins(qtamp)
 endif()
 
 if(QTAMP_MILKDROP)
