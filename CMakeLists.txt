@@ -149,7 +149,12 @@ endif()
 if(QTAMP_WASM)
     target_compile_definitions(qtamp PRIVATE QTAMP_WASM)
     # Grow the heap on demand; the skin + decoded demo PCM need headroom.
-    target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB)
+    target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB
+        # The Maki VM's DLF dispatch calls bindings through generic
+        # function-pointer types; native ABIs tolerate the mismatch, wasm
+        # traps ("function signature mismatch"). Emulate the casts until
+        # the typed (class,method) dispatch lands (fidelity keystone).
+        -sEMULATE_FUNCTION_POINTER_CASTS=1)
     # Static Qt cannot load QML module plugins at runtime, and the window
     # QML lives in a C++ string the import scanner cannot see. Shell.qml
     # declares the imports (QtQuick, QtQuick.Window) so
