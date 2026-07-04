@@ -150,23 +150,16 @@ if(QTAMP_WASM)
     target_compile_definitions(qtamp PRIVATE QTAMP_WASM)
     # Grow the heap on demand; the skin + decoded demo PCM need headroom.
     target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB
-        # The Maki VM's DLF dispatch calls bindings through generic
-        # function-pointer types; native ABIs tolerate the mismatch, wasm
-        # traps ("function signature mismatch"). Emulate the casts until
-        # the typed (class,method) dispatch lands (fidelity keystone).
-        -sEMULATE_FUNCTION_POINTER_CASTS=1)
-    # The cast emulation is incompatible with the BigInt i64 ABI Qt turns
-    # on (runtime "Cannot convert <ptr> to a BigInt" aborts): its JS
-    # thunks pass plain Numbers. Qt sets WASM_BIGINT=1 on Qt6::Platform's
-    # INTERFACE_LINK_OPTIONS, which land after our flags, so flip the
-    # flag on the imported target itself for this build.
-    get_target_property(_qt_platform_link_opts Qt6::Platform INTERFACE_LINK_OPTIONS)
-    if(_qt_platform_link_opts)
-        string(REPLACE "WASM_BIGINT=1" "WASM_BIGINT=0"
-               _qt_platform_link_opts "${_qt_platform_link_opts}")
-        set_target_properties(Qt6::Platform PROPERTIES
-            INTERFACE_LINK_OPTIONS "${_qt_platform_link_opts}")
-    endif()
+        # The Maki dispatch is signature-exact since the (class,method)
+        # keystone: callDLF invokes every binding at its registered
+        # arity, so the function-pointer cast emulation is gone — and
+        # with it the WASM_BIGINT=0 rewrite the emulation forced (Qt's
+        # default BigInt i64 ABI applies again).  ASYNCIFY gives Qt a
+        # real suspension point for QEventLoop::exec() in the browser:
+        # dialogs and the shade-mode switch stop aborting.  The stack
+        # holds the deepest suspended call chain; Qt's event dispatch
+        # needs more than the 4K default.
+        -sASYNCIFY -sASYNCIFY_STACK_SIZE=65536)
     # Static Qt cannot load QML module plugins at runtime, and the window
     # QML lives in a C++ string the import scanner cannot see. Shell.qml
     # declares the imports (QtQuick, QtQuick.Window) so
