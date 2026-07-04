@@ -22,7 +22,9 @@
 #include <QQuickView>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#ifndef Q_OS_WASM
 #include <QProcess>
+#endif
 #include <QScreen>
 #include <QSettings>
 #include <QSplashScreen>
@@ -2612,9 +2614,11 @@ public:
                     prefs->setStyleSheet(themedDialogStyle());
                 }
             } else {
+#ifndef Q_OS_WASM
                 QProcess::startDetached(
                     QApplication::applicationFilePath(), {});
                 QApplication::quit();
+#endif
             }
         });
         connect(prefs, &PreferencesDialog::settingChanged,

@@ -19,7 +19,9 @@
 #include <QAudioBuffer>
 #include <QAudioFormat>
 #include <QApplication>
+#ifndef Q_OS_WASM
 #include <QProcess>
+#endif
 #include <QWindow>
 #include <cmath>
 #include <cstring>
@@ -498,8 +500,10 @@ void WinampWindow::onSkinChanged(const QString &skinPath) {
         QSettings s(configPath(), QSettings::IniFormat);
         s.setValue("skin", skinPath);
         s.sync();
+#ifndef Q_OS_WASM
         QProcess::startDetached(QApplication::applicationFilePath(), {});
         QApplication::quit();
+#endif
         return;
     }
     {

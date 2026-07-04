@@ -1,6 +1,9 @@
 #include "skinutils.h"
 
 #include <QAudioBuffer>
+#ifndef Q_OS_WASM
+#include <QProcess>
+#endif
 #include <QAudioFormat>
 
 #include <algorithm>
@@ -37,6 +40,12 @@ QString extractSkinArchive(const QString &archivePath) {
         }
     }
 
+#ifdef Q_OS_WASM
+    // No processes in the browser; archive skins are not supported in
+    // the wasm demo (its skin ships as baked-in resources).
+    qWarning() << "skin archives unsupported on WebAssembly:" << archivePath;
+    return {};
+#else
     QProcess proc;
     proc.setWorkingDirectory(extractDir);
     QStringList args;
@@ -52,6 +61,7 @@ QString extractSkinArchive(const QString &archivePath) {
     }
 
     return extractDir;
+#endif
 }
 
 SkinPlaylistColors parsePleditTxt(const QString &skinPath) {
