@@ -4347,13 +4347,9 @@ int main(int argc, char *argv[]) {
     // fill it, and re-run the layout passes (album-art square, tabs,
     // search-header offset).  Guarded against re-entry; resizeLayoutTo
     // resizes the window to the same size it already is, so no feedback.
-    //
-    // Not on WebAssembly: there Qt expands the frameless window to fill
-    // its browser container, which this handler would read as a user
-    // resize and stretch the skin across the whole modal.  The browser
-    // player is a fixed native-size window centred in the container (see
-    // the centring block below), so the responsive relayout is off.
-#ifndef QTAMP_WASM
+    // This also re-resolves the tree after a Maki layout switch resizes
+    // the window (the shade-mode toggle) — without it the shade layout
+    // paints against stale rects (a memory-access-out-of-bounds on WASM).
     {
         auto relayout = [view]() {
             static bool busy = false;
@@ -4392,7 +4388,6 @@ int main(int argc, char *argv[]) {
         QObject::connect(qwin, &QQuickWindow::heightChanged, view,
                          [relayout](int) { relayout(); });
     }
-#endif  // !QTAMP_WASM
 
 #ifdef QTAMP_WASM
     // Qt for WebAssembly expands the frameless window to fill its
