@@ -1,4 +1,5 @@
 #include "playlistwindow.h"
+#include "audiometa.h"
 #include "qt5compat.h"
 #include "winampwindow.h"
 #include "skinutils.h"
@@ -613,24 +614,34 @@ void PlaylistWindow::addTrack(const QString &filePath) {
         tracks.append(filePath);
         trackDurations.append(0); // placeholder until async probe completes
 
-        // Probe duration asynchronously (only for local files — streams have no fixed duration)
+        // Duration: the tag headers carry it (FLAC STREAMINFO, ID3 TLEN,
+        // MP4) and audiometa reads them synchronously in microseconds, so
+        // rows show real times immediately (real Winamp behaviour) instead
+        // of 0:00 until a probe lands.  Formats audiometa cannot time fall
+        // back to the async QMediaPlayer probe; streams have no duration.
         if (!isUrl) {
-            int trackIndex = tracks.size() - 1;
-            QMediaPlayer *probe = new QMediaPlayer(this);
+            const qint64 tagMs = audiometa::tags(filePath).lengthMs;
+            if (tagMs > 0) {
+                trackDurations[trackDurations.size() - 1] = tagMs;
+                updateTotalTimeDisplay();
+            } else {
+                int trackIndex = tracks.size() - 1;
+                QMediaPlayer *probe = new QMediaPlayer(this);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-            probe->setSource(QUrl::fromLocalFile(filePath));
+                probe->setSource(QUrl::fromLocalFile(filePath));
 #else
-            probe->setMedia(QMediaContent(QUrl::fromLocalFile(filePath)));
+                probe->setMedia(QMediaContent(QUrl::fromLocalFile(filePath)));
 #endif
-            connect(probe, &QMediaPlayer::mediaStatusChanged, this, [this, probe, trackIndex](QMediaPlayer::MediaStatus status){
-                if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::InvalidMedia) {
-                    if (trackIndex < trackDurations.size()) {
-                        trackDurations[trackIndex] = (status == QMediaPlayer::LoadedMedia) ? probe->duration() : 0;
-                        updateTotalTimeDisplay();
+                connect(probe, &QMediaPlayer::mediaStatusChanged, this, [this, probe, trackIndex](QMediaPlayer::MediaStatus status){
+                    if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::InvalidMedia) {
+                        if (trackIndex < trackDurations.size()) {
+                            trackDurations[trackIndex] = (status == QMediaPlayer::LoadedMedia) ? probe->duration() : 0;
+                            updateTotalTimeDisplay();
+                        }
+                        probe->deleteLater();
                     }
-                    probe->deleteLater();
-                }
-            });
+                });
+            }
         }
     }
 }
