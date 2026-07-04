@@ -4347,6 +4347,13 @@ int main(int argc, char *argv[]) {
     // fill it, and re-run the layout passes (album-art square, tabs,
     // search-header offset).  Guarded against re-entry; resizeLayoutTo
     // resizes the window to the same size it already is, so no feedback.
+    //
+    // Not on WebAssembly: there Qt expands the frameless window to fill
+    // its browser container, which this handler would read as a user
+    // resize and stretch the skin across the whole modal.  The browser
+    // player is a fixed native-size window centred in the container (see
+    // the centring block below), so the responsive relayout is off.
+#ifndef QTAMP_WASM
     {
         auto relayout = [view]() {
             static bool busy = false;
@@ -4385,30 +4392,32 @@ int main(int argc, char *argv[]) {
         QObject::connect(qwin, &QQuickWindow::heightChanged, view,
                          [relayout](int) { relayout(); });
     }
+#endif  // !QTAMP_WASM
 
 #ifdef QTAMP_WASM
-    // The skin window is far smaller than its browser container (the
-    // page/modal), and Qt for WebAssembly pins a window to its origin,
-    // so it booted top-left.  Centre it on the screen (= the container)
-    // and re-centre whenever its own size changes (the auto-shrink
-    // settles to the painted extent) or the container resizes (a phone
-    // rotating, the modal reflowing).
+    // Qt for WebAssembly expands the frameless window to fill its
+    // browser container, so the skin item (its native ~354x280) sits at
+    // the window's top-left.  Centre the ITEM within the window (the
+    // window itself already fills the container, so moving the window
+    // does nothing), and re-centre when the container resizes (a phone
+    // rotating, the modal reflowing) or the item settles its size.
     {
-        auto centerOnScreen = [qwin]() {
-            auto *scr = QGuiApplication::primaryScreen();
-            if (!scr) return;
-            const QRect g = scr->geometry();
-            qwin->setPosition(qMax(0, (g.width()  - qwin->width())  / 2),
-                              qMax(0, (g.height() - qwin->height()) / 2));
+        auto centerItem = [view, qwin]() {
+            const qreal iw = view->width(),  ih = view->height();
+            const qreal ww = qwin->width(),  wh = qwin->height();
+            if (iw <= 0 || ih <= 0 || ww <= 0 || wh <= 0) return;
+            view->setPosition(QPointF(qMax(0.0, (ww - iw) / 2.0),
+                                      qMax(0.0, (wh - ih) / 2.0)));
         };
-        centerOnScreen();
-        QObject::connect(qwin, &QQuickWindow::widthChanged,  qwin,
-                         [centerOnScreen](int) { centerOnScreen(); });
-        QObject::connect(qwin, &QQuickWindow::heightChanged, qwin,
-                         [centerOnScreen](int) { centerOnScreen(); });
-        if (auto *scr = QGuiApplication::primaryScreen())
-            QObject::connect(scr, &QScreen::geometryChanged, qwin,
-                             [centerOnScreen](const QRect &) { centerOnScreen(); });
+        centerItem();
+        QObject::connect(qwin, &QQuickWindow::widthChanged,  view,
+                         [centerItem](int) { centerItem(); });
+        QObject::connect(qwin, &QQuickWindow::heightChanged, view,
+                         [centerItem](int) { centerItem(); });
+        QObject::connect(view, &QQuickItem::widthChanged,  view,
+                         [centerItem]() { centerItem(); });
+        QObject::connect(view, &QQuickItem::heightChanged, view,
+                         [centerItem]() { centerItem(); });
     }
 #endif
 
