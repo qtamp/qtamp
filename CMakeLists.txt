@@ -155,6 +155,18 @@ if(QTAMP_WASM)
         # traps ("function signature mismatch"). Emulate the casts until
         # the typed (class,method) dispatch lands (fidelity keystone).
         -sEMULATE_FUNCTION_POINTER_CASTS=1)
+    # The cast emulation is incompatible with the BigInt i64 ABI Qt turns
+    # on (runtime "Cannot convert <ptr> to a BigInt" aborts): its JS
+    # thunks pass plain Numbers. Qt sets WASM_BIGINT=1 on Qt6::Platform's
+    # INTERFACE_LINK_OPTIONS, which land after our flags, so flip the
+    # flag on the imported target itself for this build.
+    get_target_property(_qt_platform_link_opts Qt6::Platform INTERFACE_LINK_OPTIONS)
+    if(_qt_platform_link_opts)
+        string(REPLACE "WASM_BIGINT=1" "WASM_BIGINT=0"
+               _qt_platform_link_opts "${_qt_platform_link_opts}")
+        set_target_properties(Qt6::Platform PROPERTIES
+            INTERFACE_LINK_OPTIONS "${_qt_platform_link_opts}")
+    endif()
     # Static Qt cannot load QML module plugins at runtime, and the window
     # QML lives in a C++ string the import scanner cannot see. Shell.qml
     # declares the imports (QtQuick, QtQuick.Window) so
