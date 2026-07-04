@@ -193,13 +193,21 @@ endif()
 # pre-existing #ifdef sites in src/main.cpp activate the SkinView
 # bring-up path.  Real qtWasabi::Host implementation lands in M5.
 if(QTAMP_USE_QTWASABI)
-    foreach(_target qtWasabi::qtWasabi qtwasabi)
-        if(TARGET ${_target})
-            target_link_libraries(qtamp PRIVATE ${_target})
-            target_compile_definitions(qtamp PRIVATE WINAMP_HAVE_WASABIQT)
-            break()
-        endif()
-    endforeach()
+    # Static engine on WebAssembly: Emscripten shared objects embed their
+    # Qt dependencies, which then collide with the executable's static Qt
+    # at final link (duplicate QImage/QPainter symbols).
+    if(QTAMP_WASM AND TARGET qtwasabi_static)
+        target_link_libraries(qtamp PRIVATE qtwasabi_static)
+        target_compile_definitions(qtamp PRIVATE WINAMP_HAVE_WASABIQT)
+    else()
+        foreach(_target qtWasabi::qtWasabi qtwasabi)
+            if(TARGET ${_target})
+                target_link_libraries(qtamp PRIVATE ${_target})
+                target_compile_definitions(qtamp PRIVATE WINAMP_HAVE_WASABIQT)
+                break()
+            endif()
+        endforeach()
+    endif()
 endif()
 
 # Set RPATH so the binary finds bundled libs in /usr/lib/qtamp/
