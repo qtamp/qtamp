@@ -759,6 +759,14 @@ public:
     // Multi-file open — the user can select MANY tracks at once (not just one),
     // including everything in a folder via Ctrl+A.  Returns the chosen URLs.
     QList<QUrl> openFilesAndEnqueue(QWidget *embedder, bool enqueueOnly = false) {
+#ifdef QTAMP_WASM
+        // No synchronous native dialogs in the browser: QFileDialog::exec()
+        // needs asyncify, which is incompatible with the function-pointer
+        // cast emulation the Maki VM dispatch requires.  EJECT / open are
+        // no-ops in the demo (it plays its bundled track).
+        Q_UNUSED(embedder); Q_UNUSED(enqueueOnly);
+        return {};
+#else
         const QStringList paths = QFileDialog::getOpenFileNames(
             embedder, QObject::tr("Open file(s)"),
             QStandardPaths::writableLocation(QStandardPaths::MusicLocation),
@@ -768,9 +776,14 @@ public:
         for (const QString &p : paths) urls << QUrl::fromLocalFile(p);
         enqueueUrls(urls, enqueueOnly);
         return urls;
+#endif
     }
     // Folder open — recursively collect audio files (sorted) and enqueue them.
     QList<QUrl> openFolderAndEnqueue(QWidget *embedder, bool enqueueOnly = false) {
+#ifdef QTAMP_WASM
+        Q_UNUSED(embedder); Q_UNUSED(enqueueOnly);
+        return {};
+#else
         const QString dir = QFileDialog::getExistingDirectory(
             embedder, QObject::tr("Open folder"),
             QStandardPaths::writableLocation(QStandardPaths::MusicLocation));
@@ -791,6 +804,7 @@ public:
         for (const QString &f : files) urls << QUrl::fromLocalFile(f);
         enqueueUrls(urls, enqueueOnly);
         return urls;
+#endif
     }
 
     int  playlistRowCount() const override {
@@ -1020,12 +1034,21 @@ void QtampHost::runEqPipeline(const QAudioBuffer &buf) {
             m_eqSink->deleteLater();
             m_eqSinkDevice = nullptr;
         }
+        const QAudioDevice outDev = QMediaDevices::defaultAudioOutput();
         QAudioFormat outFmt;
         outFmt.setSampleRate(sampleRate);
         outFmt.setChannelCount(m_eqChannels);
         outFmt.setSampleFormat(QAudioFormat::Float);
-        m_eqSink = new QAudioSink(
-            QMediaDevices::defaultAudioOutput(), outFmt, this);
+#ifdef QTAMP_WASM
+        // Qt's WebAssembly (Web Audio) sink rejects a format the device
+        // does not natively support with "Failed to open audio device
+        // Invalid Operation".  Fall back to the device's nearest format
+        // so the sink actually opens; the pump already resamples/copies
+        // per buffer, so a non-Float sink is fine.
+        if (!outDev.isFormatSupported(outFmt))
+            outFmt = outDev.preferredFormat();
+#endif
+        m_eqSink = new QAudioSink(outDev, outFmt, this);
         // ~200 ms buffer matches the classic-skin path.
         m_eqSink->setBufferSize(
             sampleRate * m_eqChannels * int(sizeof(float)) / 5);
