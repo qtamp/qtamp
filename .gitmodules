@@ -3,5 +3,5 @@
 	url = https://github.com/qtWasabi/qtWasabi.git
 [submodule "deps/projectm"]
 	path = deps/projectm
-	url = https://github.com/projectM-visualizer/projectm.git
-	branch = master
+	url = https://github.com/qtamp/projectm.git
+	branch = qtamp/fbo-restore
