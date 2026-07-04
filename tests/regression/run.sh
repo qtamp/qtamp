@@ -43,6 +43,10 @@ SKINS=(
     "DeClassified"
     "Bento"
     "Big Bento"
+    # The corpus cannot score this skin (its author screenshot predates
+    # the shipped XML — see deps/qtWasabi/tests/corpus/manifest.tsv), so
+    # its pixel gate lives here instead.
+    "QTAMP-Winamp2000SP4"
 )
 
 fail=0
