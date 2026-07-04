@@ -481,6 +481,10 @@ public:
     // change).
     void openAndDecode(const QUrl &u) {
         if (u.isEmpty()) return;
+        // Play-stats feed for the Library's smart views (Most Played /
+        // Recently Played / Never Played) — every decode start counts
+        // as one play, matching ml_local bumping playcount on start.
+        if (u.isLocalFile()) m_mlIndex.recordPlay(u.toLocalFile());
         m_curSource = u;
         m_player.setSource(u);                 // metadata / duration / cover only
         m_decoder.stop();
@@ -890,6 +894,29 @@ public:
             m_playlist->setCurrentTrackIndex(base + i);
             openAndDecode(QUrl::fromLocalFile(paths.at(i)));
         }
+    }
+    QList<MlFilterRow> mlFilterValues(
+        const QString &field, const QString &countField,
+        const QList<QPair<QString, QString>> &equals) const override {
+        QList<MlFilterRow> out;
+        for (const auto &v : m_mlIndex.filterValues(field, countField, equals))
+            out.append({v.name, v.count});
+        return out;
+    }
+    QList<MlTrackRow> mlTracksQuery(
+        const QList<QPair<QString, QString>> &equals,
+        int smartView) const override {
+        QList<MlTrackRow> out;
+        for (const auto &t : m_mlIndex.tracksQuery(equals, smartView))
+            out.append({t.artist, t.album, t.title, t.genre,
+                        t.track, t.year, t.lengthMs, t.path});
+        return out;
+    }
+    // gen_ml's Library button → "Media Library Preferences...".  The
+    // dialog lives on the player window, which registers this callback.
+    std::function<void()> showPreferencesFn;
+    void mlShowPreferences() override {
+        if (showPreferencesFn) showPreferencesFn();
     }
 
 private:
@@ -1384,6 +1411,10 @@ public:
         // Hand the Host to SkinQuickItem so paintInto pulls live
         // display strings AND <slider> thumb positions from it.
         setHost(host);
+
+        // The ML Library button's "Media Library Preferences..." routes
+        // to the same Preferences dialog as the player's own menu.
+        host->showPreferencesFn = [this]() { openPreferences(); };
 
         // Load persisted visualization mode (0=off, 1=spectrum,
         // 2=oscilloscope, 3=VU).  Default to spectrum analyzer.

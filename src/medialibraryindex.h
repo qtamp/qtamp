@@ -15,6 +15,7 @@
 // shows an empty collection instead of failing to build.
 
 #include <QList>
+#include <QPair>
 #include <QString>
 
 namespace qtamp {
@@ -64,6 +65,30 @@ public:
     QList<MlAlbum>  albums(const QString &artist) const;
     QList<MlTrack>  tracks(const QString &artist, const QString &album) const;
     int             totalTracks() const;
+
+    // ── Generic filter/smart-view surface (ml_local semantics) ──────
+    // `field` ∈ artist | albumartist | album | genre | year; "artist"
+    // folds album-artist and strips featured-guest suffixes.  `equals`
+    // narrows by upstream pane selections.  `countField` fills the
+    // pane's count column ("" ⇒ track count).
+    struct MlFilterValue { QString name; int count = 0; };
+    QList<MlFilterValue> filterValues(
+        const QString &field, const QString &countField,
+        const QList<QPair<QString, QString>> &equals) const;
+
+    // Track query joining filter selections with a stock smart view.
+    // Ids mirror qtWasabi::Host::MlSmartView (0 All … 6 TopRated); the
+    // queries follow ml_local's defaults: playcount > 0, dateadded >
+    // [3 days ago], lastplay > [2 weeks ago], playcount = 0 | isempty,
+    // rating >= 3.  `dateadded` is the file's mtime captured at scan
+    // time; playcount/lastplay/rating live in the stats sidecar.
+    QList<MlTrack> tracksQuery(
+        const QList<QPair<QString, QString>> &equals, int smartView) const;
+
+    // Bump playcount + lastplay for `path` (playback started) and
+    // persist the stats sidecar.  Ratings are stored too but no UI
+    // writes them yet.
+    void recordPlay(const QString &path);
 
 private:
     struct Impl;
