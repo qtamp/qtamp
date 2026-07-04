@@ -17,17 +17,33 @@
 #                     https://github.com/qtWasabi/qtWasabi
 # Issues:             https://github.com/qtamp/qtamp/issues
 #
+# Flags:
+#   --wasm        build the in-browser WebAssembly player instead of a
+#                 native install. Needs Docker; runs the published
+#                 ghcr.io/qtamp/qtamp-wasm-builder toolchain image on the
+#                 same checkout and emits build-wasm/dist.
+#                 Usage: curl https://qtamp.sh | sh -s -- --wasm
+#
 # Tunables (env):
 #   QTAMP_REPO    git url     (default https://github.com/qtamp/qtamp.git)
 #   QTAMP_REF     branch/tag  (default main)
 #   QTAMP_PREFIX  install dir (default /usr/local; macOS /Applications)
 #   QTAMP_WORK    build dir   (default ~/.cache/qtamp-build)
+#   QTAMP_WASM_IMAGE  builder image (default ghcr.io/qtamp/qtamp-wasm-builder:latest)
 #
 set -eu
 
 QTAMP_REPO="${QTAMP_REPO:-https://github.com/qtamp/qtamp.git}"
 QTAMP_REF="${QTAMP_REF:-main}"
 QTAMP_WORK="${QTAMP_WORK:-${HOME}/.cache/qtamp-build}"
+QTAMP_WASM_IMAGE="${QTAMP_WASM_IMAGE:-ghcr.io/qtamp/qtamp-wasm-builder:latest}"
+
+WASM=0
+for arg in "$@"; do
+    case "$arg" in
+        --wasm) WASM=1 ;;
+    esac
+done
 
 say()  { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -35,12 +51,35 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 OS="$(uname -s)"
 
 # ── macOS: hand off to the dedicated .app installer ─────────────────
-if [ "$OS" = "Darwin" ]; then
+if [ "$OS" = "Darwin" ] && [ "$WASM" = "0" ]; then
     say "macOS detected, fetching the qtamp .app installer"
     exec /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/qtamp/qtamp/main/scripts/install-macos.sh)"
 fi
 
-[ "$OS" = "Linux" ] || die "unsupported OS: $OS (Linux and macOS today, Windows planned)"
+if [ "$WASM" = "0" ]; then
+    [ "$OS" = "Linux" ] || die "unsupported OS: $OS (Linux and macOS today, Windows planned)"
+fi
+
+# ── WebAssembly: same checkout, containerized toolchain ──────────────
+if [ "$WASM" = "1" ]; then
+    command -v docker >/dev/null 2>&1 || die "--wasm needs Docker (the toolchain runs in ghcr.io/qtamp/qtamp-wasm-builder)"
+    say "Cloning qtamp into ${QTAMP_WORK}"
+    mkdir -p "$QTAMP_WORK"; cd "$QTAMP_WORK"
+    if [ -d qtamp/.git ]; then
+        git -C qtamp fetch -q origin "$QTAMP_REF"
+        git -C qtamp checkout -q "$QTAMP_REF"
+        git -C qtamp pull -q --ff-only origin "$QTAMP_REF" || true
+    else
+        git clone -q --branch "$QTAMP_REF" "$QTAMP_REPO" qtamp
+    fi
+    cd qtamp
+    git submodule update --init deps/qtWasabi
+    say "Building the WebAssembly player in ${QTAMP_WASM_IMAGE}"
+    docker pull "$QTAMP_WASM_IMAGE" || say "pull failed, using local image if present"
+    docker run --rm -v "$(pwd):/src" "$QTAMP_WASM_IMAGE"
+    say "Done. Deployable player: $(pwd)/build-wasm/dist"
+    exit 0
+fi
 
 # ── Linux: dependencies via the native package manager ──────────────
 say "Installing build dependencies (sudo required for this step)"
