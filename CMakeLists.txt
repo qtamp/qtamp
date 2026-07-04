@@ -127,7 +127,30 @@ if(QTAMP_MILKDROP)
     list(APPEND QTAMP_SOURCES src/MilkdropItem.cpp)
 endif()
 
-add_executable(qtamp ${QTAMP_SOURCES})
+# ── WebAssembly demo player ─────────────────────────────────────────
+# QTAMP_WASM builds the in-browser hero player for qtamp.org: the
+# QTAMP-branded WinampModernPP skin and a public-domain demo track are
+# baked into the binary as Qt resources (wasm/qtamp_wasm.qrc), and the
+# player boots straight into that skin.  DuckDB, projectM and DBus are
+# off in this configuration.  Built with qt-cmake against the Qt for
+# WebAssembly toolchain (see github.com/qtamp/qtamp-wasm-builder).
+option(QTAMP_WASM "Build the WebAssembly demo player (bundled skin + demo track)" OFF)
+if(QTAMP_WASM)
+    set(CMAKE_AUTORCC ON)
+    list(APPEND QTAMP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/wasm/qtamp_wasm.qrc)
+endif()
+
+if(QTAMP_WASM AND QT_VERSION_MAJOR EQUAL 6)
+    qt_add_executable(qtamp ${QTAMP_SOURCES})
+else()
+    add_executable(qtamp ${QTAMP_SOURCES})
+endif()
+
+if(QTAMP_WASM)
+    target_compile_definitions(qtamp PRIVATE QTAMP_WASM)
+    # Grow the heap on demand; the skin + decoded demo PCM need headroom.
+    target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB)
+endif()
 
 if(QTAMP_MILKDROP)
     target_compile_definitions(qtamp PRIVATE QTAMP_WITH_MILKDROP)

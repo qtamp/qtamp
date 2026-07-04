@@ -3837,6 +3837,14 @@ int main(int argc, char *argv[]) {
     }
   }
 
+#ifdef QTAMP_WASM
+  // The browser build ships one skin, baked into the binary as a Qt
+  // resource (wasm/qtamp_wasm.qrc).  Qt's resource paths work with
+  // QFile/QDir, so the engine loads it exactly like a filesystem skin.
+  modernSkinPath  = QStringLiteral(":/skin/QTAMP-WinampModernPP");
+  classicSkinPath.clear();
+#endif
+
 #ifdef WINAMP_HAVE_WASABIQT
   // Modern-skin path — bypass the classic-skin chrome entirely and
   // hand the rendering over to qtWasabi's SkinView.  Accepts either
