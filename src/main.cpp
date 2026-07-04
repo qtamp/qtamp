@@ -33,6 +33,7 @@
 
 #include "audiometa.h"
 #include "eq10dsp.h"
+#include "wavreader.h"
 #include "medialibraryindex.h"
 #include "playlistwindow.h"
 #include "skinutils.h"
@@ -501,7 +502,8 @@ public:
     }
 
 #ifdef QTAMP_WASM
-    // Minimal RIFF/WAVE PCM16 reader for the bundled demo track.  Fills
+    // Read the bundled demo track through the dependency-free RIFF parser
+    // (src/wavreader.h, unit-tested in tests/wavreader_test.cpp) and fill
     // m_pcm / m_pcmFormat / m_pcmFrames the same way onDecodedBuffer does.
     bool loadWavIntoPcm(const QUrl &u) {
         QString path = u.isLocalFile() ? u.toLocalFile() : u.toString();
@@ -509,36 +511,19 @@ public:
             path = path.mid(3);                 // qrc:/x -> :/x
         QFile f(path);
         if (!f.open(QIODevice::ReadOnly)) return false;
-        const QByteArray riff = f.read(12);
-        if (riff.size() != 12 || !riff.startsWith("RIFF") || riff.mid(8, 4) != "WAVE")
-            return false;
-        int channels = 0, rate = 0, bits = 0;
-        while (!f.atEnd()) {
-            const QByteArray ch = f.read(8);
-            if (ch.size() != 8) break;
-            const quint32 len = quint32(quint8(ch[4])) | (quint32(quint8(ch[5])) << 8)
-                              | (quint32(quint8(ch[6])) << 16) | (quint32(quint8(ch[7])) << 24);
-            if (ch.startsWith("fmt ")) {
-                const QByteArray fmt = f.read(len);
-                if (fmt.size() < 16) return false;
-                channels = quint8(fmt[2]) | (quint8(fmt[3]) << 8);
-                rate = quint8(fmt[4]) | (quint8(fmt[5]) << 8)
-                     | (quint8(fmt[6]) << 16) | (quint8(fmt[7]) << 24);
-                bits = quint8(fmt[14]) | (quint8(fmt[15]) << 8);
-            } else if (ch.startsWith("data")) {
-                if (channels <= 0 || rate <= 0 || bits != 16) return false;
-                m_pcm = f.read(len);
-                m_pcmFormat.setSampleRate(rate);
-                m_pcmFormat.setChannelCount(channels);
-                m_pcmFormat.setSampleFormat(QAudioFormat::Int16);
-                m_pcmFrames = m_pcm.size() / m_pcmFormat.bytesPerFrame();
-                m_decodeDone = true;
-                return m_pcmFrames > 0;
-            } else {
-                f.seek(f.pos() + len + (len & 1));
-            }
-        }
-        return false;
+        const QByteArray all = f.readAll();
+        const qtamp::WavPcm w = qtamp::parseWavPcm16(
+            reinterpret_cast<const uint8_t *>(all.constData()),
+            static_cast<size_t>(all.size()));
+        if (!w.ok) return false;
+        m_pcm = QByteArray(reinterpret_cast<const char *>(w.data),
+                           static_cast<int>(w.dataLen));
+        m_pcmFormat.setSampleRate(w.sampleRate);
+        m_pcmFormat.setChannelCount(w.channels);
+        m_pcmFormat.setSampleFormat(QAudioFormat::Int16);
+        m_pcmFrames = m_pcm.size() / m_pcmFormat.bytesPerFrame();
+        m_decodeDone = true;
+        return m_pcmFrames > 0;
     }
 #endif
 

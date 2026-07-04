@@ -338,5 +338,15 @@ set(CPACK_DEBIAN_PACKAGE_SECTION "sound")
 set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${CPACK_PACKAGE_HOMEPAGE_URL}")
 
+# ── Tests ───────────────────────────────────────────────────────────
+# QTAMP_TESTS builds the framework-free unit tests (ctest). On by default
+# for a normal desktop configure, off for the wasm player (the tests run
+# natively in the toolchain image's smoke pass instead).
+option(QTAMP_TESTS "Build qtamp unit tests" ON)
+if(QTAMP_TESTS AND NOT QTAMP_WASM)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 set(CPACK_GENERATOR "TGZ")
 include(CPack)
