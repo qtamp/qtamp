@@ -1,4 +1,4 @@
-> **QTAMP showcase fork** — this is [qtamp](https://qtamp.org)'s fork of
+> **QTAMP showcase fork.** This is [qtamp](https://qtamp.org)'s fork of
 > [0x5066/WinampModernPP](https://github.com/0x5066/WinampModernPP) by Eris Lund (0x5066),
 > used to showcase [qtWasabi](https://github.com/qtWasabi/qtWasabi), the
 > open-source reimplementation of the Wasabi/Maki Modern skin engine.
