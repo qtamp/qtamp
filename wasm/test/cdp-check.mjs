@@ -64,7 +64,38 @@ await send('Log.enable');
 await send('Page.enable');
 await send('Page.navigate', { url });
 
-await new Promise((r) => setTimeout(r, seconds * 1000));
+// Let the skin boot, then exercise the shade-mode toggle — the path
+// that aborted under EMULATE_FUNCTION_POINTER_CASTS ("function
+// signature mismatch" on the shade switch script).  Pass click coords
+// as "x,y" in argv[5]; the WinampModernPP shade button sits near the
+// top-right of the player.  A canvas double-click on the titlebar also
+// triggers SWITCH;shade, so we double-click there as a coord-robust
+// fallback and watch the console for an abort.
+const clickArg = process.argv[5];
+await new Promise((r) => setTimeout(r, Math.min(seconds, 10) * 1000));
+const canvasBox = await send('Runtime.evaluate', { expression:
+  '(() => { const c = document.querySelector("canvas");' +
+  ' if (!c) return null; const r = c.getBoundingClientRect();' +
+  ' return JSON.stringify([r.left, r.top, r.width, r.height]); })()',
+  returnByValue: true });
+let cx = 0, cy = 0;
+if (clickArg && clickArg.includes(',')) {
+  [cx, cy] = clickArg.split(',').map(Number);
+} else if (canvasBox?.result?.value) {
+  const [l, t, w] = JSON.parse(canvasBox.result.value);
+  cx = l + w - 40; cy = t + 8;   // titlebar, near the shade/close cluster
+}
+if (cx || cy) {
+  for (const type of ['mousePressed', 'mouseReleased',
+                      'mousePressed', 'mouseReleased']) {
+    await send('Input.dispatchMouseEvent', {
+      type, x: cx, y: cy, button: 'left', clickCount: 2 });
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  record('[test] dispatched shade double-click at ' + cx + ',' + cy);
+}
+
+await new Promise((r) => setTimeout(r, Math.max(2, seconds - 10) * 1000));
 
 const shot = await send('Page.captureScreenshot', { format: 'png' });
 if (shot?.data) {
