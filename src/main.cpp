@@ -4003,8 +4003,10 @@ int main(int argc, char *argv[]) {
         return 4;
     }
     view->setParentItem(qwin->contentItem());
-    view->setSize(QSizeF(view->layoutNativeSize()));
-    qwin->resize(view->layoutNativeSize());
+    // displaySize applies the render ratio (basewnd::setRenderRatio):
+    // XML-unit layout scaled by the user's chosen factor.
+    view->setSize(QSizeF(view->displaySize()));
+    qwin->resize(view->displaySize());
     // Force the QQuickWindow's wl_surface to use an alpha buffer.
     // Wayfire/Asahi composites alpha=0 pixels correctly ONLY when
     // the surface was created with an ARGB visual; the default
@@ -4290,7 +4292,7 @@ int main(int argc, char *argv[]) {
     // skin chrome).  Keep it short so X11/Wayfire's titlebar text
     // doesn't wrap.
     qwin->setTitle(QStringLiteral("Winamp"));
-    qwin->resize(view->layoutNativeSize());
+    qwin->resize(view->displaySize());
     // Auto-shrink to painted-region extent after Maki mutations.
     // Off by default in qtWasabi so other embedders preserve explicit
     // Maki sizing; qtamp opts in.
@@ -4307,10 +4309,18 @@ int main(int argc, char *argv[]) {
             static bool busy = false;
             auto *w = view->window();
             if (busy || !w) return;
-            const QSize ws(w->width(), w->height());
-            if (ws.width() <= 0 || ws.height() <= 0 ||
-                ws == view->layoutNativeSize())
+            // The window is in display units; the layout speaks XML
+            // units.  Convert through the render ratio, otherwise a
+            // ratio != 1 feeds the scaled size back into the layout
+            // and halves (or doubles) the window on every pass.
+            const double rr = view->renderRatio();
+            const QSize wpx(w->width(), w->height());
+            if (wpx.width() <= 0 || wpx.height() <= 0 ||
+                wpx == view->displaySize())
                 return;
+            const QSize ws(int(wpx.width()  / rr + 0.5),
+                           int(wpx.height() / rr + 0.5));
+            if (ws == view->layoutNativeSize()) return;
             busy = true;
             // Free resize must not snap back to the painted extent.
             view->setAutoShrinkToRegion(false);
