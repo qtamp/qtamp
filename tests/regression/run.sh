@@ -56,7 +56,11 @@ for skin in "${SKINS[@]}"; do
         continue
     fi
 
-    QT_QPA_PLATFORM=offscreen "$QTAMP" \
+    # Hermetic: the user's winamp.conf (saved color theme, vis mode)
+    # must not leak into baselines — a stored synthetic theme once
+    # masqueraded as an engine-wide color regression.  SKIN_DIR was
+    # expanded above, so skins still come from the real location.
+    HOME="$TMPDIR" QT_QPA_PLATFORM=offscreen "$QTAMP" \
         --modern-skin "$SKIN_DIR/$skin" \
         --screenshot "$rendered" >"$TMPDIR/${slug}.log" 2>&1 || true
 
