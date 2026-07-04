@@ -3,14 +3,14 @@
 # qtamp macOS installer — build qtamp + qtWasabi from source and install
 # qtamp.app into /Applications.  Meant to be run straight off the web:
 #
-#     curl -fsSL https://raw.githubusercontent.com/kleberbaum/qtamp/main/scripts/install-macos.sh | bash
+#     curl -fsSL https://raw.githubusercontent.com/qtamp/qtamp/main/scripts/install-macos.sh | bash
 #
 # It provisions the toolchain (Xcode CLT, Homebrew, cmake/ninja/qt), pulls
 # qtamp + the qtWasabi engine, downloads the Wasabi source tree from the
 # archive.org mirror, then builds, bundles a .app, and installs it.
 #
 # Tunables (env):
-#   QTAMP_REPO          git url    (default kleberbaum/qtamp)
+#   QTAMP_REPO          git url    (default qtamp/qtamp)
 #   QTAMP_REF           branch/tag (default main)
 #   WITH_MILKDROP       0|1        (default 0 — the projectM visualizer)
 #   WITH_ML_PLUGINS     0|1        (default 0 — gen_ml/ml_* library plugins)
@@ -19,7 +19,7 @@
 #
 set -euo pipefail
 
-QTAMP_REPO="${QTAMP_REPO:-https://github.com/kleberbaum/qtamp.git}"
+QTAMP_REPO="${QTAMP_REPO:-https://github.com/qtamp/qtamp.git}"
 QTAMP_REF="${QTAMP_REF:-main}"
 WITH_MILKDROP="${WITH_MILKDROP:-0}"
 PREFIX="${PREFIX:-/Applications}"
