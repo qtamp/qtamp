@@ -22,11 +22,15 @@ const IGNORE = [
   /GroupMarkerNotSet/i, /SkinRuntime: cannot open/i,
 ];
 
-const list = await (await fetch('http://127.0.0.1:9222/json/list')).json();
+// CDP endpoint port — override via CDP_PORT (TS6 occupies 9222 on the
+// dev box, so a co-hosted browser check must point elsewhere).
+const cdpPort = process.env.CDP_PORT || '9222';
+const cdpBase = `http://127.0.0.1:${cdpPort}`;
+const list = await (await fetch(`${cdpBase}/json/list`)).json();
 let page = list.find((t) => t.type === 'page');
 if (!page) {
   const nt = await (await fetch(
-    'http://127.0.0.1:9222/json/new?' + encodeURIComponent(url))).json();
+    `${cdpBase}/json/new?` + encodeURIComponent(url))).json();
   page = nt;
 }
 

@@ -389,6 +389,14 @@ public:
         }
         if (f == QLatin1String("album"))       return s(QMediaMetaData::AlbumTitle);
         if (f == QLatin1String("albumartist")) return s(QMediaMetaData::AlbumArtist);
+        if (f == QLatin1String("length")) {
+            // Track length in milliseconds — Winamp's "length" metadata
+            // scale (scripts StringToInteger it and compare against ms).
+            // Empty when unknown (stream/endless), the script cue for
+            // their endless-source fallbacks.
+            const qint64 ms = m_player.duration();
+            return ms > 0 ? QString::number(ms) : QString();
+        }
         if (f == QLatin1String("track"))       return s(QMediaMetaData::TrackNumber);
         if (f == QLatin1String("genre"))       return s(QMediaMetaData::Genre);
         if (f == QLatin1String("composer"))    return s(QMediaMetaData::Composer);
@@ -1536,6 +1544,31 @@ protected:
 
     void mousePressEvent(QMouseEvent *e) override {
         if (e->button() == Qt::RightButton) {
+            // Skin scripts get first refusal on right-clicks — real
+            // Winamp routes the button events to the widget under the
+            // cursor and only shows the default menu when nothing
+            // consumed them.  wa2songtimer.m binds TimerTrigger.
+            // onRightButtonUp to pop its own elapsed/remaining menu.
+            // Down and Up are dispatched back-to-back here (the skin
+            // popup opens a nested loop that swallows the real release
+            // anyway); receiver-gated, so widgets without handlers
+            // cost nothing and fall through to qtamp's menu.
+            const QPoint rp = e->position().toPoint();
+            int consumed = 0;
+            const QList<const qtWasabi::Layout::ResolvedWidget *> rHits =
+                alphaHitTestList(rp, /*actionOnly=*/false,
+                                 qtampImageSize, &registry());
+            for (const auto *w : rHits) {
+                if (!w || w->id.isEmpty()) continue;
+                consumed += qtWasabi::fireWidgetXYEventOn(
+                    w, L"onRightButtonDown", rp.x(), rp.y());
+                consumed += qtWasabi::fireWidgetXYEventOn(
+                    w, L"onRightButtonUp", rp.x(), rp.y());
+                consumed += qtWasabi::fireWidgetEvent(
+                    w->id, L"onRightClick");
+                if (consumed > 0) break;
+            }
+            if (consumed > 0) { update(); return; }
             // Right-click anywhere → Winamp-style context menu,
             // built against qtamp's qtWasabi::Host transport surface.
             showContextMenu(e->globalPosition().toPoint());
@@ -1876,14 +1909,24 @@ protected:
                 // interception is needed here — the click falls through
                 // to the generic onLeftClick dispatch below.
                 applyDrawerModeFixup(w->id);
+                // GuiObject press event first — scripts that bind
+                // onLeftButtonDown(x, y) (wa2songtimer.m's elapsed/
+                // remaining toggle on the invisible TimerTrigger
+                // layer) get real button semantics; the widget id is
+                // remembered so mouseReleaseEvent routes the matching
+                // onLeftButtonUp.  onLeftClick stays the second try
+                // for the (far more common) click-bound handlers.
+                const int downFired = qtWasabi::fireWidgetXYEventOn(
+                    w, L"onLeftButtonDown", p.x(), p.y());
+                if (downFired > 0) { m_makiPressId = w->id; m_makiPressWidget = w; }
                 int fired = qtWasabi::fireWidgetEvent(
                     w->id, L"onLeftClick");
                 if (::getenv("WASABIQT_TRACE_MAKI"))
                     fprintf(stderr,
-                        "[click] (%d,%d) alpha hit id=%s fired=%d\n",
+                        "[click] (%d,%d) alpha hit id=%s fired=%d down=%d\n",
                         p.x(), p.y(),
-                        w->id.toLocal8Bit().constData(), fired);
-                if (fired > 0) {
+                        w->id.toLocal8Bit().constData(), fired, downFired);
+                if (fired > 0 || downFired > 0) {
                     update();
                     return;
                 }
@@ -2140,6 +2183,22 @@ protected:
     void mouseReleaseEvent(QMouseEvent *e) override {
         m_dragging = false;
         m_ctDragging = false;
+        // Route the matching GuiObject onLeftButtonUp to the script
+        // receiver whose onLeftButtonDown claimed the press.  Guarded
+        // by findById: a Down handler can rebuild the tree (skin
+        // switch), freeing the remembered pointer.
+        if (!m_makiPressId.isEmpty() && e->button() == Qt::LeftButton) {
+            const QPoint rp = e->position().toPoint();
+            if (m_makiPressWidget &&
+                qtWasabi::Widget::findById(m_makiPressId) ==
+                    m_makiPressWidget) {
+                qtWasabi::fireWidgetXYEventOn(
+                    m_makiPressWidget, L"onLeftButtonUp", rp.x(), rp.y());
+            }
+            m_makiPressId.clear();
+            m_makiPressWidget = nullptr;
+            update();
+        }
         if (activeWidgetStale()) setActiveWidget(nullptr);
         if (m_activeWidget && e->button() == Qt::LeftButton) {
             qtWasabi::PaintCtx mctx{};
@@ -2371,11 +2430,14 @@ public:
                 if (key == QLatin1String("playitem:string"))       return h->songPath();
                 if (key == QLatin1String("playitem:displaytitle")) return h->playItemDisplayTitle();
                 if (key == QLatin1String("decoder"))               return h->decoderName();
-                // Live data sources (otherwise unbound→0 in the VM):
-                if (key == QLatin1String("playitem:length"))       // seconds
-                    return QString::number(h->durationMs() / 1000);
-                if (key == QLatin1String("playitem:position"))     // seconds
-                    return QString::number(h->positionMs() / 1000);
+                // Live data sources (otherwise unbound→0 in the VM).
+                // Milliseconds — the Maki scale: getPlayItemLength()/
+                // getPosition() return core ms and scripts feed them
+                // straight into integerToTime(ms).
+                if (key == QLatin1String("playitem:length"))
+                    return QString::number(h->durationMs());
+                if (key == QLatin1String("playitem:position"))
+                    return QString::number(h->positionMs());
                 if (key == QLatin1String("playlist:length"))
                     return QString::number(h->playlistRowCount());
                 if (key == QLatin1String("playlist:index"))
@@ -2668,6 +2730,11 @@ public:
             prefs->setColorThemes(gammasets().names(),
                                   atDefault ? QString() : activeName);
         }
+        // Reflect the skin scripts' persisted time-display mode (the
+        // same slot wa2songtimer.m toggles on a time-display click).
+        prefs->setTimeDisplayMode(qtWasabi::privateConfigInt(
+            qtWasabi::activeSkinName(),
+            QStringLiteral("TimerElapsedRemaining"), 1));
         connect(prefs, &PreferencesDialog::colorThemeChanged, this,
                 [this](const QString &name) {
             // The "Default colors" entry isn't a real gammaset — revert to
@@ -2716,6 +2783,18 @@ public:
                 this, [this](const QString &key, const QVariant &v){
             if (key == QStringLiteral("visMode")) {
                 setVisMode(v.toInt());
+            } else if (key == QStringLiteral("timeDisplayMode")) {
+                // Write the scripts' slot and nudge them through
+                // onTitleChange — wa2songtimer.m re-reads the mode and
+                // re-applies elapsed/remaining on that event, exactly
+                // as it does when the track title changes.
+                qtWasabi::setPrivateConfigInt(
+                    qtWasabi::activeSkinName(),
+                    QStringLiteral("TimerElapsedRemaining"), v.toInt());
+                if (m_runtime)
+                    m_runtime->dispatchTitleChange(
+                        m_host->playItemDisplayTitle());
+                update();
             } else if (key == QStringLiteral("saPeaks") ||
                        key == QStringLiteral("saPeakFalloff") ||
                        key == QStringLiteral("saFalloff")) {
@@ -3677,6 +3756,12 @@ public:
     QtampHost *m_host = nullptr;
     QPoint     m_dragOrigin;
     bool       m_dragging = false;
+    // Script receiver whose onLeftButtonDown claimed the press —
+    // mouseReleaseEvent routes the matching onLeftButtonUp to it.
+    // Pointer for the instance-exact dispatch, id for the liveness
+    // re-check (findById) in case a handler rebuilt the tree.
+    QString    m_makiPressId;
+    const qtWasabi::Widget *m_makiPressWidget = nullptr;
     QString    m_sliderAction;     // empty when not dragging a slider
     QRect      m_sliderTrack;
     // Widget currently holding the left mouse button — receives
@@ -4640,6 +4725,10 @@ int main(int argc, char *argv[]) {
       // through mousePressEvent (hit-test, fireWidgetEvent, drag
       // fallthrough).  Lets us verify the full click pipeline in
       // offscreen tests instead of bypassing it with WASABIQT_FIRE_CLICK.
+      // An "R" prefix on a point ("R60,70") sends a RIGHT click, so the
+      // script-first right-button dispatch (onRightButtonDown/Up +
+      // PopupMenu, with WASABIQT_TEST_MENU_PICK selecting the item) is
+      // testable offscreen too.
       if (const char *c = ::getenv("WASABIQT_CLICK_AT")) {
         const QString s = QString::fromLocal8Bit(c);
         const QStringList pts = s.split(';', Qt::SkipEmptyParts);
@@ -4651,18 +4740,25 @@ int main(int argc, char *argv[]) {
         int delay = qEnvironmentVariableIntValue("WASABIQT_CLICK_DELAY");
         if (delay <= 0) delay = 600;
         for (const QString &pt : pts) {
-            const QStringList xy = pt.split(',');
+            QString spec = pt.trimmed();
+            Qt::MouseButton btn = Qt::LeftButton;
+            if (spec.startsWith(QLatin1Char('R'), Qt::CaseInsensitive)) {
+                btn = Qt::RightButton;
+                spec.remove(0, 1);
+            }
+            const QStringList xy = spec.split(',');
             if (xy.size() != 2) continue;
             const int px = xy[0].toInt();
             const int py = xy[1].toInt();
-            QTimer::singleShot(delay, view, [view, px, py]() {
-                fprintf(stderr, "qtamp: synth click at (%d,%d)\n", px, py);
+            QTimer::singleShot(delay, view, [view, px, py, btn]() {
+                fprintf(stderr, "qtamp: synth %s click at (%d,%d)\n",
+                        btn == Qt::RightButton ? "right" : "left", px, py);
                 const QPointF pos(px, py);
                 // Offscreen QQuickItems don't receive synthesised QMouseEvents
                 // through the platform layer, so drive a full press+release
                 // through the REAL handlers (the exact path a live click
                 // takes — capture check, dispatchClickAt, drag fallthrough).
-                view->testClick(pos);
+                view->testClick(pos, btn);
                 view->update();
             });
             delay += 200;
