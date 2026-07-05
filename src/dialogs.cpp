@@ -970,6 +970,15 @@ QWidget *PreferencesDialog::createModernSkinsPage()
     return page;
 }
 
+void PreferencesDialog::setTimeDisplayMode(int mode)
+{
+    if (!timeElapsedRadio || !timeRemainingRadio) return;
+    QSignalBlocker b1(timeElapsedRadio);
+    QSignalBlocker b2(timeRemainingRadio);
+    timeElapsedRadio->setChecked(mode != 2);
+    timeRemainingRadio->setChecked(mode == 2);
+}
+
 void PreferencesDialog::setColorThemes(const QStringList &names,
                                        const QString &current)
 {
@@ -1020,6 +1029,25 @@ QWidget *PreferencesDialog::createPlaybackPage()
     advLayout->addWidget(alwaysContinue);
     advLayout->addWidget(fadeOnStop);
     layout->addWidget(advGroup);
+
+    // Time display — the same two modes real Winamp offers.  Clicking
+    // the player's time display toggles them too: the skin scripts and
+    // this dialog share one persisted slot, wired by the embedder
+    // through settingChanged("timeDisplayMode", 1|2).
+    QGroupBox *timeGroup = new QGroupBox("Time display", page);
+    QVBoxLayout *timeLayout = new QVBoxLayout(timeGroup);
+    timeElapsedRadio   = new QRadioButton("Time elapsed", page);
+    timeRemainingRadio = new QRadioButton("Time remaining (countdown)", page);
+    timeElapsedRadio->setChecked(true);
+    timeLayout->addWidget(timeElapsedRadio);
+    timeLayout->addWidget(timeRemainingRadio);
+    layout->addWidget(timeGroup);
+    connect(timeElapsedRadio, &QRadioButton::toggled, this, [this](bool on) {
+        if (on) emit settingChanged("timeDisplayMode", 1);
+    });
+    connect(timeRemainingRadio, &QRadioButton::toggled, this, [this](bool on) {
+        if (on) emit settingChanged("timeDisplayMode", 2);
+    });
 
     connect(stopAfterCheck, &QCheckBox::toggled, this, [this](bool v) { emit settingChanged("stopAfterCurrent", v); });
 

@@ -8,6 +8,7 @@
 #include <QLineEdit>
 #include <QTextEdit>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QListWidget>
 #include <QFileInfo>
 #include <QMediaPlayer>
@@ -151,6 +152,11 @@ public:
     // active skin's gammaset names (the embedder owns the registry).
     void setColorThemes(const QStringList &names, const QString &current);
 
+    // Reflect the player's time-display mode (1 = elapsed, 2 =
+    // remaining/countdown — the same values wa2songtimer.m stores in
+    // the scripts' private-int slot) in the Playback page radios.
+    void setTimeDisplayMode(int mode);
+
 signals:
     void skinChanged(const QString &skinPath);
     void settingChanged(const QString &key, const QVariant &value);
@@ -179,6 +185,8 @@ private:
 
     QListWidget *modernSkinListWidget = nullptr;
     QComboBox   *colorThemeCombo = nullptr;
+    QRadioButton *timeElapsedRadio   = nullptr;
+    QRadioButton *timeRemainingRadio = nullptr;
     void populateModernSkins();
     void onModernSkinSelected(QListWidgetItem *item);
     void onSkinSelected(QListWidgetItem *item);
