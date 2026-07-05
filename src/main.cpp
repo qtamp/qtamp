@@ -1505,6 +1505,28 @@ public:
         update();
     }
 
+    // ── Time-display mode (skin-level) ─────────────────────────
+    //    1 = elapsed, 2 = remaining (countdown).  One state shared
+    //    with the skin scripts: reads/writes the per-skin
+    //    TimerElapsedRemaining slot wa2songtimer.m keys on
+    //    getSkinName(), then nudges the scripts through
+    //    onTitleChange — the event they re-apply the mode on.
+    //    Driven by the context-menu Time display submenu, the
+    //    skin's own time-click toggle, and the Preferences dialog.
+    int  timeDisplayMode() const {
+        return qtWasabi::privateConfigInt(
+            qtWasabi::activeSkinName(),
+            QStringLiteral("TimerElapsedRemaining"), 1);
+    }
+    void setTimeDisplayMode(int mode) {
+        qtWasabi::setPrivateConfigInt(
+            qtWasabi::activeSkinName(),
+            QStringLiteral("TimerElapsedRemaining"), mode == 2 ? 2 : 1);
+        if (m_runtime && m_host)
+            m_runtime->dispatchTitleChange(m_host->playItemDisplayTitle());
+        update();
+    }
+
     // ── Colour-themes list state (app-level) ──────────────────
     int     colorThemesSelectedRow() const { return m_ctSelectedRow; }
     void    setColorThemesSelectedRow(int row) {
@@ -2620,6 +2642,20 @@ public:
         QAction *visMilkdropAct = visMenu->addAction("Milkdrop visualization...");
         visMilkdropAct->setEnabled(false);
 
+        // -- Time display submenu --
+        // Elapsed vs remaining (countdown), the two modes real Winamp
+        // offers.  Same per-skin slot the skin's own time-click toggle
+        // and the Preferences radios use, so all three stay one state.
+        QMenu *timeMenu = menu.addMenu("Time display");
+        timeMenu->setStyleSheet(menuStyle);
+        const int timeMode = timeDisplayMode();
+        QAction *timeElapsedAct = timeMenu->addAction("Time elapsed");
+        timeElapsedAct->setCheckable(true);
+        timeElapsedAct->setChecked(timeMode != 2);
+        QAction *timeRemainAct = timeMenu->addAction("Time remaining");
+        timeRemainAct->setCheckable(true);
+        timeRemainAct->setChecked(timeMode == 2);
+
         menu.addSeparator();
 
         QAction *aboutAct = menu.addAction("About Winamp...");
@@ -2710,6 +2746,8 @@ public:
         else if (sel == visSpecAct) setVisMode(1);
         else if (sel == visOscAct)  setVisMode(2);
         else if (sel == visVuAct)   setVisMode(3);
+        else if (sel == timeElapsedAct) setTimeDisplayMode(1);
+        else if (sel == timeRemainAct)  setTimeDisplayMode(2);
         else if (sel == quitAct) { if (window()) window()->close(); }
     }
 
@@ -2784,17 +2822,7 @@ public:
             if (key == QStringLiteral("visMode")) {
                 setVisMode(v.toInt());
             } else if (key == QStringLiteral("timeDisplayMode")) {
-                // Write the scripts' slot and nudge them through
-                // onTitleChange — wa2songtimer.m re-reads the mode and
-                // re-applies elapsed/remaining on that event, exactly
-                // as it does when the track title changes.
-                qtWasabi::setPrivateConfigInt(
-                    qtWasabi::activeSkinName(),
-                    QStringLiteral("TimerElapsedRemaining"), v.toInt());
-                if (m_runtime)
-                    m_runtime->dispatchTitleChange(
-                        m_host->playItemDisplayTitle());
-                update();
+                setTimeDisplayMode(v.toInt());
             } else if (key == QStringLiteral("saPeaks") ||
                        key == QStringLiteral("saPeakFalloff") ||
                        key == QStringLiteral("saFalloff")) {
@@ -3179,6 +3207,18 @@ public:
             act[menu.addAction("Next")]     = [this]{ m_host->next(); };
         } else if (m == QLatin1String("options")) {
             act[menu.addAction("Preferences...")] = [this]{ openPreferences(); };
+            menu.addSeparator();
+            // Real Winamp's Options menu carries the two time-display
+            // modes; same per-skin slot as the context-menu submenu.
+            const int tm = timeDisplayMode();
+            QAction *te = menu.addAction("Time elapsed");
+            te->setCheckable(true);
+            te->setChecked(tm != 2);
+            act[te] = [this]{ setTimeDisplayMode(1); };
+            QAction *tr = menu.addAction("Time remaining");
+            tr->setCheckable(true);
+            tr->setChecked(tm == 2);
+            act[tr] = [this]{ setTimeDisplayMode(2); };
         } else if (m == QLatin1String("view") ||
                    m == QLatin1String("windows")) {
             act[menu.addAction("Playlist editor")] =
@@ -4719,6 +4759,18 @@ int main(int argc, char *argv[]) {
           QTimer::singleShot(at, view, [view, p]() { view->reloadSkin(p); });
           at += 700;
         }
+      }
+      // Test hook: WASABIQT_TEST_TIMEMODE=1|2 — run the context-menu /
+      // Options time-display action offscreen (the QMenu::exec path
+      // itself needs real input).  Fires after the load settle so the
+      // skin scripts are bound, exactly like a user pick would.
+      if (const char *tm = ::getenv("WASABIQT_TEST_TIMEMODE")) {
+        const int mode = QString::fromLocal8Bit(tm).toInt();
+        QTimer::singleShot(2500, view, [view, mode]() {
+            fprintf(stderr, "qtamp: test time-display mode -> %d\n", mode);
+            view->setTimeDisplayMode(mode);
+        });
+        screenshotDelayMs = qMax(screenshotDelayMs, 2500 + 400);
       }
       // WASABIQT_CLICK_AT="x,y;x,y" — synthesise full Qt QMouseEvent
       // press+release at the given coords so the click path runs
