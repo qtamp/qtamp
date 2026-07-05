@@ -4574,15 +4574,24 @@ int main(int argc, char *argv[]) {
           screenshotDelayMs = qMax(screenshotDelayMs, 900);
       }
       // Test hook: switch skins at runtime to reproduce reloadSkin bugs.
+      // Semicolon-separated list switches sequentially (1.2s apart) — a
+      // multi-switch is what arms teardown-order bugs: the first switch's
+      // deleteLater'd subwindows destruct between switches and the second
+      // switch dispatches into whatever state they left behind.
       if (const char *sw = ::getenv("WASABIQT_SWITCH_TO")) {
-          const QString xml = QString::fromLocal8Bit(sw);
-          QTimer::singleShot(800, view, [view, xml]() {
-              fprintf(stderr, "qtamp: reloadSkin -> %s\n",
-                      xml.toLocal8Bit().constData());
-              view->reloadSkin(xml);
-              fprintf(stderr, "qtamp: reloadSkin returned OK\n");
-          });
-          screenshotDelayMs = qMax(screenshotDelayMs, 2000);
+          const QStringList xmls =
+              QString::fromLocal8Bit(sw).split(';', Qt::SkipEmptyParts);
+          int at = 800;
+          for (const QString &xml : xmls) {
+              QTimer::singleShot(at, view, [view, xml]() {
+                  fprintf(stderr, "qtamp: reloadSkin -> %s\n",
+                          xml.toLocal8Bit().constData());
+                  view->reloadSkin(xml);
+                  fprintf(stderr, "qtamp: reloadSkin returned OK\n");
+              });
+              at += 1200;
+          }
+          screenshotDelayMs = qMax(screenshotDelayMs, at + 1200);
       }
       // Test hook: synthesise hover moves (use with WASABIQT_TRACE_HOVER
       // to see which widget the hover hit-test resolves to).
