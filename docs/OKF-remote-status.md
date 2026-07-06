@@ -123,12 +123,22 @@ build with a hard <25 MiB Pages gate), `wasm/test/mock-remote-server.mjs`
 `wasm/test/cdp-check-remote.mjs` (real-Chromium gate: /state fetch,
 EventSource subscription, SSE push survival, revision-gap resync, pledit
 variant at 436x164). Native build and the whole remote test family stay green.
-**Open:** the actual wasm compile must run in the x86_64 builder container on
-the build server — this session could not reach it (remote shell writes were
-sandbox-denied), and the local aarch64/16K-page host cannot emulate the
-x86_64 toolchain (qemu binfmt fails to map 4K-aligned segments). Next step:
-`scripts/build-wasm-remote.sh` in the builder, then `cdp-check-remote.mjs`
-against the dist.
+**Built and verified:** `scripts/build-wasm-remote.sh` ran in the builder on
+the build server — qtamp.wasm is 22 MiB after wasm-opt (under the 25 MiB
+gate), the js/wasm link test passed in-build, and `cdp-check-remote.mjs`
+PASSES against the real dist in a real Chromium (SwiftShader): /state fetch,
+EventSource subscription, SSE push survival, revision-gap resync (events
+delivered AND applied in the browser), the pledit head at exactly 436x164,
+no fatal console errors. One fix fell out: Qt 6.8 renders into a shadow root,
+so the test walks shadow DOMs to find the canvas.
+
+**Open fidelity item (does not block the sync layer):** the wasm pledit head
+draws its list area flat grey and does not render the synced playlist row,
+while a native head with the SAME bundled skin against the SAME mock renders
+the dark-blue list with the row — so the state arrives, the wasm-side pledit
+paint is at fault (suspect: the pe_init-style gate documented in the
+draw_pe gotchas). Needs the qtWasabi debug loop before the playlist iframe
+ships to users; the player window renders correctly.
 
 **M7 — bot container (code complete locally; server deploy pending).** The new
 repo `~/git/ts4party-musicbot` carries the whole container: a two-stage
