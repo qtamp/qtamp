@@ -94,9 +94,20 @@ GraphQL subscription carrying a pause issued on the backend directly. All green.
 With M4+M4b the full local sync loop is proven end to end: any head (native or
 GraphQL client) can mutate, every other head converges.
 
-## What is next (not built yet)
+**M5 — `--container` root window (done).** `qtamp --container <ref>` renders
+any skin container as the window's root instead of `"main"` — `--container pl`
+is just the Playlist Editor. The ref resolves exactly like the skin's TOGGLE
+action (container id, component GUID, or the `pl`/`ml`/`vid` aliases); the root
+container also drives skin reload, and a non-main root disables the subwindow
+machinery (one container per process — the shape each browser iframe needs).
+Gated by `tests/regression/container_root_test.sh`: the container-as-root
+render must match the proven `--screenshot-container` subwindow capture (exact
+size, MAE < 3 across the two render stacks; measured 1.295). The six-skin
+pixel regression stays byte-identical, and the live proof works end to end:
+a `--connect --container pl` head against a running backend renders the synced
+playlist row in its pledit-rooted window.
 
-- **M5** `--container` root window.
+## What is next (not built yet)
 - **M6** the `QTAMP_WASM_REMOTE` browser build.
 - **M7** the TeamSpeak music-bot container on the server.
 - **M8** public routing, the browser iframes in the bot's user-info panel, the
@@ -123,8 +134,9 @@ this to be recorded.
   `remotetransport` + the `--connect`/`--probe` wiring, with the `remotehost`
   unit test and the `sync_test.sh` two-process convergence proof; the M4b
   qtamp-pylon (BackendLink, schema, passthrough plugin, mock backend, 9 vitest
-  tests) and the `e2e-remote.sh` full-chain proof; and this documentation.
-  Milestones M5 onward are Fable's to implement.
+  tests) and the `e2e-remote.sh` full-chain proof; the M5 `--container` root
+  window with its screenshot gate; and this documentation. Milestones M6
+  onward are Fable's to implement.
 
 (The pre-existing qtamp and qtWasabi codebase this builds on is the user's own
 prior work, largely authored across earlier sessions; this attribution covers
