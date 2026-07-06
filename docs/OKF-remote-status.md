@@ -155,9 +155,34 @@ playlist (idempotent by path, epoch-aware adoption after backend restarts) and
 autoplays when idle — 6 node:test cases against mocked pylons, all green.
 `deploy/run.sh` guards 8788/8789/9223/18800 loopback-only via nft;
 `deploy/smoke.sh` checks every port plus an audio-RMS gate on
-`music_out.monitor`. **Open:** creating the GitHub repo and the server deploy
-(run.sh needs the user anyway); TS file-transfer ingest is a live-probe
-follow-up — until then `/music` is the drop directory.
+`music_out.monitor`.
+
+**M7 server image (built + smoke-verified in-image).** The
+`ts4party-musicbot` image now builds on the Netcup host: the server layout is
+staged (`/opt/ts4party-musicbot/{app,bridge-api,home,music,deploy}` — TS6 app
+and bridge-api copied from the ts6-remote install, qtamp source staged at the
+pinned main). This was the FIRST x86-64 Linux build of qtamp against the
+fetch-wasabi.sh WCL mirror and surfaced a three-part fix chain, all landed in
+qtWasabi (`m16/decouple-and-list-input`): the platform overlay now supplies
+`linux-amd64/types.h` (the public mirror dispatches to it but does not ship
+it), the two bfc string TUs compile from configure-time build-tree copies
+with `va_list saveargs = args;` rewritten to `va_copy` (x86-64 SysV va_list
+is an array type; aarch64/wasm ABIs accepted the assignment, which is why no
+earlier target hit it), and libuuid joined the image deps. The runtime image
+carries the full `cmake --install` prefix (qtamp links the SHARED qtwasabi,
+resolved via the `$ORIGIN/../lib/qtamp` RPATH) and a pre-built qtamp-pylon
+(no npm at boot). In-image smoke, all green: the backend serves `/state`,
+the pylon answers `Query.player` and forwards mutations (setVolume echoes
+42), the control-channel passthrough streams, and the driver against the
+live stack picks up dropped files, playlistAdds them through the pylon
+(rowCount 2) and autoplays row 0 with `playing:true`. The aarch64 laptop
+build stays clean after the qtWasabi changes (ctest unchanged, six-skin
+pixel regression byte-identical).
+
+**Open:** creating the GitHub repo (sandbox-denied; user), the container
+START via `deploy/run.sh` (user-gated by standing rule) with bot UID
+recording and the real audio E2E, and TS file-transfer ingest (live-probe
+follow-up — until then `/music` is the drop directory).
 
 **M8 — public routing + iframes (local code done; deploy pending).** In
 ts6-client (feat/bridge-live-tap, pushed): the pylon's `loopback-proxy` plugin
@@ -172,14 +197,17 @@ full suite 34 green), the client-info player sections in `tsclient-shim.js`
 CF Access service token for the MacBook native connect, and the friends
 policy.
 
-## What is next (blocked on server/user access)
-- **M6 build+verify** run `scripts/build-wasm-remote.sh` in the builder on the
-  build server, then `wasm/test/cdp-check-remote.mjs` against the dist.
-- **M7 deploy** create the GitHub repo, stage server layout, user runs
-  `deploy/run.sh`, record the bot UID, audio E2E in the channel.
-- **M8 deploy** redeploy ts4.party Pages with PLAYER_DIST + shim, set
-  TS6_PROXY_ROUTES on the ts6-remote container, CF Access service token for
-  the MacBook, friends via Zitadel.
+## What is next (user-gated)
+- **M7 go-live** create the GitHub repo for ts4party-musicbot, user runs
+  `deploy/run.sh` (nft guard + container start), record the bot UID, drop
+  real mp3/flac into `/opt/ts4party-musicbot/music`, audio E2E in the
+  channel (`deploy/smoke.sh` includes the RMS gate).
+- **M8 deploy** redeploy ts4.party Pages with PLAYER_DIST + shim (set
+  `TS6_MUSIC_BOT_UID` in localStorage to enable the sections), set
+  TS6_PROXY_ROUTES on the ts6-remote container (container recreate), CF
+  Access service token for the MacBook native connect, friends via Zitadel.
+- **Fidelity** the pledit-wasm paint item above, before the playlist iframe
+  ships.
 
 Full plan and milestone detail: the session plan file
 (`~/.claude/plans/kannst-du-dich-noch-jolly-cake.md`).
@@ -208,8 +236,11 @@ this to be recorded.
   server + cdp gate); the M7 ts4party-musicbot repo (container, entry.sh,
   driver + its 6 tests); the M8 local pieces in ts6-client (loopback-proxy
   plugin + tests, client-info player sections, PLAYER_DIST docroot support);
-  and this documentation. The remaining server-side deploys are Fable's to
-  finish next session.
+  the M6 server build + real-Chromium verification; the M7 image bring-up on
+  the server including the WCL x86-64 fix chain in qtWasabi (linux-amd64
+  overlay types, the va_copy string-TU rewrite, libuuid) and the in-image
+  smoke of backend, pylon and driver; and this documentation. The remaining
+  user-gated go-live steps are listed above.
 
 (The pre-existing qtamp and qtWasabi codebase this builds on is the user's own
 prior work, largely authored across earlier sessions; this attribution covers
