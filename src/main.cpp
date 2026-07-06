@@ -121,6 +121,44 @@ QSize qtampImageSize(const QString &bitmapId, void *userdata) {
 #include "recentfilesmanager.h"
 #include "skinutils.h"
 
+#ifdef QTAMP_REMOTE_ONLY
+#include <emscripten.h>
+
+#include <cstdlib>
+
+// Read a query parameter of the embedding page ("__origin" returns
+// location.origin).  Strings cross the JS boundary through our own
+// KEEPALIVE allocator + manual UTF-8 on HEAPU8 — no Emscripten
+// runtime-method exports needed (same technique as the EventSource
+// glue in remotetransport.cpp).
+extern "C" {
+EMSCRIPTEN_KEEPALIVE void *qtamp_query_alloc(int n) { return std::malloc(n); }
+}
+// clang-format off
+EM_JS(char *, qtamp_query_param_js, (const char *namePtr), {
+    let end = namePtr;
+    while (HEAPU8[end]) end++;
+    const name = new TextDecoder().decode(HEAPU8.subarray(namePtr, end));
+    let v = '';
+    try {
+        if (name === '__origin') v = location.origin;
+        else v = new URLSearchParams(location.search).get(name) || '';
+    } catch (e) { v = ''; }
+    const data = new TextEncoder().encode(v);
+    const ptr = _qtamp_query_alloc(data.length + 1);
+    HEAPU8.set(data, ptr);
+    HEAPU8[ptr + data.length] = 0;
+    return ptr;
+});
+// clang-format on
+static QString wasmQueryParam(const char *name) {
+    char *p = qtamp_query_param_js(name);
+    QString v = QString::fromUtf8(p);
+    std::free(p);
+    return v;
+}
+#endif  // QTAMP_REMOTE_ONLY
+
 #ifdef WINAMP_HAVE_WASABIQT
 
 // (Preferences + About + Jump-to-File + Play-Location dialogs live
@@ -4049,7 +4087,7 @@ int main(int argc, char *argv[]) {
   const bool backendMode = !backendPortArg.isEmpty();
   // --connect <url>: run the normal player UI but backed by a RemoteHost
   // synced to a networked backend at <url> (the pylon/PROTOCOL.md root).
-  const QString connectUrl = takeStringArg(argc, argv, "--connect");
+  QString connectUrl = takeStringArg(argc, argv, "--connect");
   // --probe <field>: headless connectivity check (tests). Connect a
   // RemoteHost to --connect, wait for the first snapshot, print one
   // field and exit. No skin, no window.
@@ -4060,7 +4098,35 @@ int main(int argc, char *argv[]) {
   // (container id, component GUID, or the pl/ml/vid aliases).  A
   // non-main root disables subwindow toggles: one container per
   // process, which is how each browser iframe hosts a single window.
-  const QString rootContainerArg = takeStringArg(argc, argv, "--container");
+  QString rootContainerArg = takeStringArg(argc, argv, "--container");
+#ifdef QTAMP_REMOTE_ONLY
+  // The remote-only browser head is configured by its embedding page:
+  //   /player/?window=player|pledit&graphql=/api/music/graphql
+  // CLI args (tests) win over query params.  `graphql=` may point at
+  // the pylon's GraphQL endpoint — the control channel lives at the
+  // pylon root, so a trailing /graphql is stripped; a relative path
+  // resolves against the page origin (the iframe's same-origin proxy).
+  if (connectUrl.isEmpty()) {
+      QString v = wasmQueryParam("connect");
+      if (v.isEmpty()) v = wasmQueryParam("graphql");
+      if (v.endsWith(QLatin1String("/graphql"))) v.chop(8);
+      if (!v.isEmpty() && !v.startsWith(QLatin1String("http")))
+          v = wasmQueryParam("__origin")
+              + (v.startsWith(QLatin1Char('/')) ? v
+                                                : QLatin1Char('/') + v);
+      connectUrl = v.isEmpty() ? wasmQueryParam("__origin") : v;
+  }
+  if (rootContainerArg.isEmpty()) {
+      QString c = wasmQueryParam("container");
+      if (c.isEmpty()) {
+          const QString w = wasmQueryParam("window").toLower();
+          if (w == QLatin1String("pledit") || w == QLatin1String("playlist")
+              || w == QLatin1String("pl"))
+              c = QStringLiteral("pl");
+      }
+      rootContainerArg = c;
+  }
+#endif
   if (backendMode && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
       // Headless by default: the QWidget-based playlist model still wants
       // a QPA, offscreen satisfies it without a display server.
@@ -4766,9 +4832,10 @@ int main(int argc, char *argv[]) {
           modernCliFiles << fi.absoluteFilePath();
         }
       }
-#ifdef QTAMP_WASM
+#if defined(QTAMP_WASM) && !defined(QTAMP_REMOTE_ONLY)
       // Queue the bundled demo loop like a CLI file argument; the user's
       // Play click inside the skin doubles as the browser's audio gesture.
+      // The remote head bundles no track — audio lives on the backend.
       if (modernCliFiles.isEmpty())
           modernCliFiles << QStringLiteral(":/demo.wav");
 #endif

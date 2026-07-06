@@ -141,9 +141,24 @@ endif()
 # off in this configuration.  Built with qt-cmake against the Qt for
 # WebAssembly toolchain (see github.com/qtamp/qtamp-wasm-builder).
 option(QTAMP_WASM "Build the WebAssembly demo player (bundled skin + demo track)" OFF)
+# QTAMP_WASM_REMOTE builds the networked browser HEAD instead: the same
+# engine + skin, but no local audio — it boots straight into RemoteHost
+# (--connect / the page's ?graphql= query param) and mirrors a remote
+# `qtamp --backend`.  The demo track stays out of the qrc; audio plays
+# on the backend, the head only renders and sends commands.
+option(QTAMP_WASM_REMOTE "Build the WebAssembly remote head (synced UI, no local audio)" OFF)
+if(QTAMP_WASM_REMOTE AND NOT QTAMP_WASM)
+    set(QTAMP_WASM ON CACHE BOOL "implied by QTAMP_WASM_REMOTE" FORCE)
+endif()
 if(QTAMP_WASM)
     set(CMAKE_AUTORCC ON)
-    list(APPEND QTAMP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/wasm/qtamp_wasm.qrc)
+    if(QTAMP_WASM_REMOTE)
+        list(APPEND QTAMP_SOURCES
+             ${CMAKE_CURRENT_SOURCE_DIR}/wasm/qtamp_wasm_remote.qrc)
+    else()
+        list(APPEND QTAMP_SOURCES
+             ${CMAKE_CURRENT_SOURCE_DIR}/wasm/qtamp_wasm.qrc)
+    endif()
 endif()
 
 if(QTAMP_WASM AND QT_VERSION_MAJOR EQUAL 6)
@@ -154,6 +169,9 @@ endif()
 
 if(QTAMP_WASM)
     target_compile_definitions(qtamp PRIVATE QTAMP_WASM)
+    if(QTAMP_WASM_REMOTE)
+        target_compile_definitions(qtamp PRIVATE QTAMP_REMOTE_ONLY)
+    endif()
     # Grow the heap on demand; the skin + decoded demo PCM need headroom.
     target_link_options(qtamp PRIVATE -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB)
     # The Maki dispatch is signature-exact since the (class,method)

@@ -51,6 +51,7 @@ class HttpTransport : public RemoteTransport {
     Q_OBJECT
 public:
     explicit HttpTransport(QObject *parent = nullptr);
+    ~HttpTransport() override;
 
     // e.g. {"CF-Access-Client-Id", "..."}; applied to every request.
     void setExtraHeaders(const QList<QPair<QByteArray, QByteArray>> &h) {
@@ -64,6 +65,16 @@ public:
     void openEventStream(const QUrl &url) override;
     void closeEventStream() override;
 
+#ifdef Q_OS_WASM
+    // Entry points for the browser EventSource glue (the EM_JS blocks in
+    // remotetransport.cpp) — same thread as the Qt event loop in the
+    // singlethreaded wasm build, so emitting directly is safe.
+    void wasmDeliverEvent(const QByteArray &event, const QByteArray &data) {
+        emit eventReceived(event, data);
+    }
+    void wasmDeliverState(bool up) { emit streamStateChanged(up); }
+#endif
+
 private:
     void scheduleReconnect();
     QNetworkRequest makeRequest(const QUrl &url) const;
@@ -75,6 +86,9 @@ private:
     QUrl m_streamUrl;
     int m_backoffMs = 500;
     bool m_closing = false;
+#ifdef Q_OS_WASM
+    int m_wasmStreamId = 0;
+#endif
 };
 
 // Test double: scripted replies, manual event injection, an op log.
