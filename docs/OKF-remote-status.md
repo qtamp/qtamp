@@ -107,8 +107,31 @@ pixel regression stays byte-identical, and the live proof works end to end:
 a `--connect --container pl` head against a running backend renders the synced
 playlist row in its pledit-rooted window.
 
+**M6 — `QTAMP_WASM_REMOTE` (code complete; server build pending).** The new
+CMake option builds the networked browser head: same engine + bundled skin, no
+local audio, `QTAMP_REMOTE_ONLY` boots straight into RemoteHost. The embedding
+page configures it via query params (`?window=player|pledit`,
+`?graphql=/api/music/graphql` — trailing `/graphql` stripped, relative paths
+resolved against the page origin). Under wasm the SSE stream is the browser's
+native `EventSource` (Qt-WASM's QNetworkReply buffers GETs to completion, so
+the streaming path never delivers); the JS glue is self-contained via own
+KEEPALIVE alloc wrappers and manual UTF-8 on HEAPU8. The demo track stays out
+of the remote qrc. Shipped alongside: `wasm/remote/index.html` (native-size
+container per window param), `scripts/build-wasm-remote.sh` (builder-container
+build with a hard <25 MiB Pages gate), `wasm/test/mock-remote-server.mjs`
+(one-origin dist + PROTOCOL.md mock, route-verified in node) and
+`wasm/test/cdp-check-remote.mjs` (real-Chromium gate: /state fetch,
+EventSource subscription, SSE push survival, revision-gap resync, pledit
+variant at 436x164). Native build and the whole remote test family stay green.
+**Open:** the actual wasm compile must run in the x86_64 builder container on
+the build server — this session could not reach it (remote shell writes were
+sandbox-denied), and the local aarch64/16K-page host cannot emulate the
+x86_64 toolchain (qemu binfmt fails to map 4K-aligned segments). Next step:
+`scripts/build-wasm-remote.sh` in the builder, then `cdp-check-remote.mjs`
+against the dist.
+
 ## What is next (not built yet)
-- **M6** the `QTAMP_WASM_REMOTE` browser build.
+- **M6 build+verify** run the builder on the server, cdp-check the dist.
 - **M7** the TeamSpeak music-bot container on the server.
 - **M8** public routing, the browser iframes in the bot's user-info panel, the
   MacBook native connect, and opening it to friends.
@@ -135,8 +158,10 @@ this to be recorded.
   unit test and the `sync_test.sh` two-process convergence proof; the M4b
   qtamp-pylon (BackendLink, schema, passthrough plugin, mock backend, 9 vitest
   tests) and the `e2e-remote.sh` full-chain proof; the M5 `--container` root
-  window with its screenshot gate; and this documentation. Milestones M6
-  onward are Fable's to implement.
+  window with its screenshot gate; the M6 `QTAMP_WASM_REMOTE` build mode
+  (EventSource glue, query-param config, remote host page, build script, mock
+  server + cdp gate); and this documentation. Milestones M7 onward are
+  Fable's to implement.
 
 (The pre-existing qtamp and qtWasabi codebase this builds on is the user's own
 prior work, largely authored across earlier sessions; this attribution covers
