@@ -149,9 +149,16 @@ const check = (cond, label) => {
 {
   const page = await openPage(`${base}/?window=pledit&graphql=/`)
   await sleep(bootSeconds * 1000)
+  // Qt 6.8 renders into a shadow root (qt-shadow-container), so the
+  // canvas is invisible to a plain document.querySelector.
   const box = await page.send('Runtime.evaluate', {
     expression:
-      '(() => { const c = document.querySelector("canvas");' +
+      '(() => { const find = root => {' +
+      '  const c = root.querySelector("canvas"); if (c) return c;' +
+      '  for (const el of root.querySelectorAll("*"))' +
+      '    if (el.shadowRoot) { const r = find(el.shadowRoot); if (r) return r; }' +
+      '  return null; };' +
+      ' const c = find(document);' +
       ' if (!c) return ""; const r = c.getBoundingClientRect();' +
       ' return Math.round(r.width) + "x" + Math.round(r.height); })()',
     returnByValue: true
