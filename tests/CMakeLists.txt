@@ -22,11 +22,38 @@ target_include_directories(ssereader_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ssereader_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
 add_test(NAME ssereader COMMAND ssereader_test)
 
+# RemoteHost against an injected transport (no network). It backs a
+# PlayerHost (qtWasabi::Host subclass), so it needs the qtWasabi library;
+# built only when qtamp itself links it. Gui for the QObject/signal
+# machinery; runs offscreen.
+if(TARGET qtwasabi_static)
+    add_executable(remotehost_test remotehost_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/playerhost.h
+        ${CMAKE_SOURCE_DIR}/src/remotehost.cpp
+        ${CMAKE_SOURCE_DIR}/src/remotetransport.cpp
+        ${CMAKE_SOURCE_DIR}/src/remotestate.cpp
+        ${CMAKE_SOURCE_DIR}/src/ssereader.cpp)
+    target_include_directories(remotehost_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(remotehost_test PRIVATE
+        qtwasabi_static
+        Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui
+        Qt${QT_VERSION_MAJOR}::Network)
+    add_test(NAME remotehost COMMAND remotehost_test)
+    set_tests_properties(remotehost PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 # Backend-mode integration test: drives `qtamp --backend` over HTTP with
 # curl. Requires the built qtamp binary; skipped implicitly if curl is
 # absent (the script fails loudly, which CTest reports).
 add_test(NAME backend
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/remote/backend_test.sh
+            $<TARGET_FILE_DIR:qtamp>)
+
+# Full local sync loop: `qtamp --backend` + a `qtamp --connect` head,
+# convergence asserted through the head's --probe. No TS/pylon/browser.
+add_test(NAME sync
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/remote/sync_test.sh
             $<TARGET_FILE_DIR:qtamp>)
 
 add_custom_target(qtamp_tests

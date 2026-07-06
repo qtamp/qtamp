@@ -6,7 +6,7 @@ namespace qtamp {
 
 namespace {
 
-QJsonObject transportToJson(const RemoteTransport &t) {
+QJsonObject transportToJson(const TransportState &t) {
     return {{QStringLiteral("playing"), t.playing},
             {QStringLiteral("paused"), t.paused},
             {QStringLiteral("positionMs"), double(t.positionMs)},
@@ -16,7 +16,7 @@ QJsonObject transportToJson(const RemoteTransport &t) {
             {QStringLiteral("pan"), t.pan}};
 }
 
-void transportFromJson(const QJsonObject &o, RemoteTransport *t) {
+void transportFromJson(const QJsonObject &o, TransportState *t) {
     t->playing = o.value(QLatin1String("playing")).toBool(t->playing);
     t->paused = o.value(QLatin1String("paused")).toBool(t->paused);
     t->positionMs =

@@ -15,7 +15,7 @@
 
 namespace qtamp {
 
-struct RemoteTransport {
+struct TransportState {
     bool   playing = false;
     bool   paused  = false;
     qint64 positionMs = 0;    // position at sampling time…
@@ -24,7 +24,7 @@ struct RemoteTransport {
     int    volume = 100;      // 0..100
     double pan = 0.5;         // 0..1 slider axis, 0.5 = centre
 
-    bool operator==(const RemoteTransport &o) const {
+    bool operator==(const TransportState &o) const {
         return playing == o.playing && paused == o.paused &&
                positionMs == o.positionMs && positionAtMs == o.positionAtMs &&
                durationMs == o.durationMs && volume == o.volume &&
@@ -80,7 +80,7 @@ struct RemoteSnapshot {
     QString epoch;         // fresh per backend boot; change = full resync
     quint64 revision = 0;  // global monotonic change counter
     qint64 serverNowMs = 0;
-    RemoteTransport transport;
+    TransportState transport;
     RemoteTrack track;
     RemotePlaylist playlist;
     RemoteEq eq;

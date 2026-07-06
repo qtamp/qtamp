@@ -55,10 +55,29 @@ shape, SSE push on mutation, path-guard rejection, playlist count) — all green
 and the pixel-regression suite is still identical (the playlist-signal change is
 behaviour-neutral).
 
+**M4 — RemoteHost + `--connect` + local sync loop (qtamp side done, committed
+`<pending>`).** `src/remotetransport.{h,cpp}` is the transport abstraction:
+`HttpTransport` (QNetworkAccessManager POSTs/GETs + a streaming SSE GET feeding
+SseReader, capped-backoff reconnect, CF-Access header support) and
+`InjectedTransport` (the no-network test double). `src/remotehost.{h,cpp}` is a
+`PlayerHost` whose reads answer from the cached snapshot (position interpolated
+by PositionClock), whose writes become `/cmd` POSTs with optimistic echo, and
+whose pushed SSE events update the cache and fire the PlayerHost change signals —
+so the window's repaint machinery works unchanged. `main.cpp` grows `--connect
+<url>` (RemoteHost-backed player), the host factory (local vs remote), and a
+headless `--probe <field>` for tests. **Verified three ways, all offscreen, no
+TS/pylon/browser**: `remotehost_test` (reads/events/writes against the injected
+transport), and `tests/remote/sync_test.sh` — a real `qtamp --backend` plus a
+real `qtamp --connect` head that **converges to every backend mutation** (play,
+pause, playlist add). The pixel regression is still identical.
+
+Still open in M4: the **qtamp-pylon** (the GraphQL facade over the control
+channel, for the browser/driver) — the native `--connect` path already works
+directly against the control channel, so the pylon is additive.
+
 ## What is next (not built yet)
 
-- **M4** `RemoteHost` + `--connect` + the qtamp-pylon; the first full local sync
-  loop (backend + pylon + two native heads on the laptop, no server).
+- **M4b** the qtamp-pylon (GraphQL facade) + its vitest suite.
 - **M5** `--container` root window.
 - **M6** the `QTAMP_WASM_REMOTE` browser build.
 - **M7** the TeamSpeak music-bot container on the server.
@@ -82,8 +101,10 @@ this to be recorded.
   baseline verification; the M1 `PlayerHost` extraction; the M2 protocol core
   (`remotestate`, `ssereader`, `PROTOCOL.md`) with its unit tests; the M3
   backend mode (`backendserver`, the `PlaylistWindow::changed()` signal, the
-  `--backend` wiring in `main.cpp`) with its integration test; and this
-  documentation. Milestones M4 onward are Fable's to implement.
+  `--backend` wiring) with its integration test; the M4 `RemoteHost` +
+  `remotetransport` + the `--connect`/`--probe` wiring, with the `remotehost`
+  unit test and the `sync_test.sh` two-process convergence proof; and this
+  documentation. Milestones M4b (the pylon) onward are Fable's to implement.
 
 (The pre-existing qtamp and qtWasabi codebase this builds on is the user's own
 prior work, largely authored across earlier sessions; this attribution covers

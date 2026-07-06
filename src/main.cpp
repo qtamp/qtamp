@@ -38,6 +38,8 @@
 #include "playlistwindow.h"
 #include "playerhost.h"
 #include "backendserver.h"
+#include "remotehost.h"
+#include "remotetransport.h"
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -4028,6 +4030,13 @@ int main(int argc, char *argv[]) {
   // skin and no windows.  See docs/OKF-remote.md.  Port 0 = ephemeral.
   const QString backendPortArg = takeStringArg(argc, argv, "--backend");
   const bool backendMode = !backendPortArg.isEmpty();
+  // --connect <url>: run the normal player UI but backed by a RemoteHost
+  // synced to a networked backend at <url> (the pylon/PROTOCOL.md root).
+  const QString connectUrl = takeStringArg(argc, argv, "--connect");
+  // --probe <field>: headless connectivity check (tests). Connect a
+  // RemoteHost to --connect, wait for the first snapshot, print one
+  // field and exit. No skin, no window.
+  const QString probeField = takeStringArg(argc, argv, "--probe");
   if (backendMode && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
       // Headless by default: the QWidget-based playlist model still wants
       // a QPA, offscreen satisfies it without a display server.
@@ -4060,6 +4069,36 @@ int main(int argc, char *argv[]) {
   app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
   app.setOrganizationName("Qtamp");
+
+  if (!probeField.isEmpty() && !connectUrl.isEmpty()) {
+      // Headless probe: connect, wait for the first snapshot, print the
+      // requested field, exit. Used by tests/remote/sync_test.sh.
+      auto *host = new qtamp::RemoteHost(QUrl(connectUrl),
+                                         new qtamp::HttpTransport());
+      auto printAndExit = [host, probeField]() {
+          QString out;
+          if (probeField == QLatin1String("playing"))
+              out = host->isPlaying() ? QStringLiteral("true")
+                                      : QStringLiteral("false");
+          else if (probeField == QLatin1String("paused"))
+              out = host->isPaused() ? QStringLiteral("true")
+                                     : QStringLiteral("false");
+          else if (probeField == QLatin1String("playlistCount"))
+              out = QString::number(host->playlistRowCount());
+          else if (probeField == QLatin1String("title"))
+              out = host->songTitle();
+          else if (probeField == QLatin1String("volume"))
+              out = QString::number(host->volume());
+          printf("%s\n", out.toLocal8Bit().constData());
+          QCoreApplication::exit(0);
+      };
+      // The snapshot arrives on the first repaint-driving signal; give a
+      // short settle then print (a fixed delay keeps the probe simple and
+      // is plenty on loopback).
+      QTimer::singleShot(600, &app, printAndExit);
+      QTimer::singleShot(5000, &app, []() { QCoreApplication::exit(2); });
+      return app.exec();
+  }
 
   if (backendMode) {
       // The whole backend: the local host (audio pipeline), the hidden
@@ -4168,25 +4207,39 @@ int main(int argc, char *argv[]) {
       return 3;
     }
 
-    auto *host = new QtampHost();
-
-    // Reuse PlaylistWindow as the modern path's playlist data model.
-    // The widget is never `show()`n — it's purely a track-data holder
-    // that backs the engine-level <playlistpro> renderer through the
-    // qtWasabi::Host playlist accessors.  Library root defaults to
-    // the user's Music dir, again hidden behind the Host abstraction.
-    auto *modernPl = new PlaylistWindow(nullptr);
-    QObject::connect(modernPl, &PlaylistWindow::trackDoubleClicked,
-        [host](const QString &filePath) {
-            host->openAndDecode(QUrl::fromLocalFile(filePath));
-        });
-    host->setPlaylist(modernPl);
-    const QString musicDir = QStandardPaths::writableLocation(
-        QStandardPaths::MusicLocation);
-    if (!musicDir.isEmpty() && QDir(musicDir).exists())
-        host->setLibraryRoot(musicDir);
-    else
-        host->setLibraryRoot(QDir::homePath());
+    // The host factory: local (the full audio pipeline + playlist model)
+    // or remote (a RemoteHost synced to a networked backend, --connect).
+    // Everything below this block depends only on the PlayerHost base.
+    PlayerHost *host = nullptr;
+    PlaylistWindow *modernPl = nullptr;
+    if (!connectUrl.isEmpty()) {
+        host = new qtamp::RemoteHost(QUrl(connectUrl),
+                                     new qtamp::HttpTransport());
+        fprintf(stderr, "qtamp: remote head connected to %s\n",
+                connectUrl.toLocal8Bit().constData());
+    } else {
+        auto *localHost = new QtampHost();
+        // Reuse PlaylistWindow as the modern path's playlist data model.
+        // The widget is never `show()`n — it's purely a track-data holder
+        // that backs the engine-level <playlistpro> renderer through the
+        // qtWasabi::Host playlist accessors.  Library root defaults to
+        // the user's Music dir, again hidden behind the Host abstraction.
+        modernPl = new PlaylistWindow(nullptr);
+        QObject::connect(modernPl, &PlaylistWindow::trackDoubleClicked,
+            [localHost](const QString &filePath) {
+                localHost->openAndDecode(QUrl::fromLocalFile(filePath));
+            });
+        localHost->setPlaylist(modernPl);
+        QObject::connect(modernPl, &PlaylistWindow::changed, localHost,
+                         &PlayerHost::notifyPlaylistChanged);
+        const QString musicDir = QStandardPaths::writableLocation(
+            QStandardPaths::MusicLocation);
+        if (!musicDir.isEmpty() && QDir(musicDir).exists())
+            localHost->setLibraryRoot(musicDir);
+        else
+            localHost->setLibraryRoot(QDir::homePath());
+        host = localHost;
+    }
 
     // QtampPlayerWindow is a QQuickItem hosted inside a QQuickWindow
     // declared from QML.  A raw C++-constructed
@@ -4687,20 +4740,28 @@ int main(int argc, char *argv[]) {
           modernCliFiles << QStringLiteral(":/demo.wav");
 #endif
     }
+    // A remote head has no local playlist model or file access; the
+    // backend owns the playlist, so CLI media is ignored (with a note).
+    if (!modernPl && (!modernCliFiles.isEmpty() ||
+                      ::getenv("WASABIQT_PLAY_FILE"))) {
+      fprintf(stderr,
+              "qtamp: --connect: ignoring local media args (the backend "
+              "owns the playlist)\n");
+    }
     const bool modernHasCliMedia =
-        !modernCliFiles.isEmpty() || ::getenv("WASABIQT_PLAY_FILE");
-    if (const char *f = ::getenv("WASABIQT_PLAY_FILE")) {
+        modernPl && (!modernCliFiles.isEmpty() || ::getenv("WASABIQT_PLAY_FILE"));
+    if (const char *f = modernPl ? ::getenv("WASABIQT_PLAY_FILE") : nullptr) {
       QTimer::singleShot(0, view, [host, modernPl, f]() {
         const QString path = QString::fromLocal8Bit(f);
         modernPl->addTrack(path);
         modernPl->setCurrentTrackIndex(0);
-        host->openAndDecode(QUrl::fromLocalFile(path));
+        host->openPath(QUrl::fromLocalFile(path));
       });
-    } else if (!modernCliFiles.isEmpty()) {
+    } else if (modernPl && !modernCliFiles.isEmpty()) {
       QTimer::singleShot(0, view, [host, modernPl, modernCliFiles]() {
         for (const QString &f : modernCliFiles) modernPl->addTrack(f);
         modernPl->setCurrentTrackIndex(0);
-        host->openAndDecode(QUrl::fromLocalFile(modernCliFiles.first()));
+        host->openPath(QUrl::fromLocalFile(modernCliFiles.first()));
       });
     }
 
