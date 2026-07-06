@@ -1,0 +1,9 @@
+{
+  "extends": "@getcronit/pylon/tsconfig.pylon.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["esnext", "dom", "dom.iterable"],
+    "skipLibCheck": true
+  },
+  "include": ["src", "pylon.d.ts"]
+}

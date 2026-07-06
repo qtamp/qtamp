@@ -1,0 +1,25 @@
+{
+  "name": "qtamp-pylon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GraphQL facade over a `qtamp --backend` control channel: typed player state, mutations, and SSE subscriptions for synced heads (see PROTOCOL.md and docs/OKF-remote.md).",
+  "scripts": {
+    "dev": "PYLON_DISABLE_TELEMETRY=true node node_modules/@getcronit/pylon-dev/dist/index.js dev -c \"node --enable-source-maps .pylon/index.js\"",
+    "build": "PYLON_DISABLE_TELEMETRY=true node node_modules/@getcronit/pylon-dev/dist/index.js build",
+    "start": "node --enable-source-maps .pylon/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@getcronit/pylon": "file:vendor/getcronit-pylon-2.9.5.tgz",
+    "@hono/node-server": "^1.13.0",
+    "@getcronit/pylon-query": "file:vendor/getcronit-pylon-query-0.0.0.tgz"
+  },
+  "devDependencies": {
+    "@getcronit/pylon-dev": "file:vendor/getcronit-pylon-dev-1.0.5.tgz",
+    "@getcronit/pylon-ir": "file:vendor/getcronit-pylon-ir-0.0.0.tgz",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
