@@ -36,6 +36,7 @@
 #include "wavreader.h"
 #include "medialibraryindex.h"
 #include "playlistwindow.h"
+#include "playerhost.h"
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -254,10 +255,20 @@ private:
 // expects, so qtWasabi's default DisplayResolver + dispatchAction
 // helpers can do the actual skin-format-convention work.
 class QtampPlayerWindow;
-class QtampHost : public QObject, public qtWasabi::Host {
+class QtampHost : public PlayerHost {
 public:
     QtampHost() {
         reloadVisPrefs();
+
+        // Bridge the live QMediaPlayer signals onto the PlayerHost
+        // notification surface the window listens to, so the same repaint
+        // machinery works whether the host is local or remote.
+        connect(&m_player, &QMediaPlayer::sourceChanged, this,
+                [this](const QUrl &) { emit sourceChanged(); });
+        connect(&m_player, &QMediaPlayer::playbackStateChanged, this,
+                [this](QMediaPlayer::PlaybackState) { emit playbackStateChanged(); });
+        connect(&m_player, &QMediaPlayer::metaDataChanged, this,
+                [this]() { emit metaDataChanged(); });
 
         // Single, always-on audio path.  QMediaPlayer's QAudioOutput
         // is INTENTIONALLY left unset — there's exactly one sink,
@@ -304,10 +315,14 @@ public:
                 m_eqToggleSub);
     }
 
-    void bindWindow(QtampPlayerWindow *w) { m_window = w; }
-
     QMediaPlayer       &player()       { return m_player; }
     const QMediaPlayer &player() const { return m_player; }
+
+    // Decode a path from the top (PlayerHost surface; the internal call
+    // sites keep using openAndDecode directly).
+    void openPath(const QUrl &u) override { openAndDecode(u); }
+    QUrl currentSourceUrl() const override { return m_player.source(); }
+    AudioAnalyzer *analyzerPtr() override { return &m_analyzer; }
 
     // ── Read state ─────────────────────────────────────────────
     // Position is the play cursor over the decoded PCM.
@@ -370,7 +385,7 @@ public:
 
     // Full path/URL — what System.getPlayItemString() returns (the
     // skin's fileinfo.maki does removePath() on it).
-    QString songPath() const {
+    QString songPath() const override {
         const QUrl src = m_player.source();
         return src.isLocalFile() ? src.toLocalFile() : src.toString();
     }
@@ -621,7 +636,7 @@ public:
 
     // Reload viz prefs from QSettings (called on startup and when
     // Preferences emits settingChanged).
-    void reloadVisPrefs() {
+    void reloadVisPrefs() override {
         QSettings s(configPath(), QSettings::IniFormat);
         m_peaksVisible = s.value("visualization/peaks", true).toBool();
         m_analyzer.setPeakFalloff(
@@ -699,7 +714,7 @@ public:
     // slider store that drives the EQ sliders AND the audio DSP — so the EQ
     // reset/+/- buttons move the sliders and change the sound in lockstep.
     // Slider 0 = top (+12 dB), 63 = bottom (-12 dB), 31 = flat.
-    void setEqBandValue(int band, int val) {
+    void setEqBandValue(int band, int val) override {
         if (band < 0 || band > 9) return;
         m_eqBandSlider[band] =
             qBound(0, qRound(31.0 - val * 31.0 / 127.0), 63);
@@ -719,7 +734,7 @@ public:
             qtWasabi::CfgAttribStore::instance().set(
                 QStringLiteral("__action:EQ_TOGGLE"), 1);
     }
-    int eqBandValue(int band) const {
+    int eqBandValue(int band) const override {
         if (band < 0 || band > 9) return 0;
         return qBound(-127,
             qRound((31 - m_eqBandSlider[band]) * 127.0 / 31.0), 127);
@@ -751,7 +766,7 @@ public:
     // only swapping the audio source.  enqueueOnly=true adds without
     // changing what's playing.  Engine-agnostic; all open/enqueue call
     // sites should route through here rather than poking m_player.
-    void enqueueAndPlay(const QUrl &u, bool enqueueOnly = false) {
+    void enqueueAndPlay(const QUrl &u, bool enqueueOnly = false) override {
         if (u.isEmpty()) return;
         const QString path = u.isLocalFile() ? u.toLocalFile() : u.toString();
         int row = -1;
@@ -782,7 +797,7 @@ public:
     }
     // Multi-file open — the user can select MANY tracks at once (not just one),
     // including everything in a folder via Ctrl+A.  Returns the chosen URLs.
-    QList<QUrl> openFilesAndEnqueue(QWidget *embedder, bool enqueueOnly = false) {
+    QList<QUrl> openFilesAndEnqueue(QWidget *embedder, bool enqueueOnly = false) override {
 #ifdef QTAMP_WASM
         // No synchronous native dialogs in the browser: QFileDialog::exec()
         // needs asyncify, which is incompatible with the function-pointer
@@ -803,7 +818,7 @@ public:
 #endif
     }
     // Folder open — recursively collect audio files (sorted) and enqueue them.
-    QList<QUrl> openFolderAndEnqueue(QWidget *embedder, bool enqueueOnly = false) {
+    QList<QUrl> openFolderAndEnqueue(QWidget *embedder, bool enqueueOnly = false) override {
 #ifdef QTAMP_WASM
         Q_UNUSED(embedder); Q_UNUSED(enqueueOnly);
         return {};
@@ -933,8 +948,8 @@ public:
         return out;
     }
     // gen_ml's Library button → "Media Library Preferences...".  The
-    // dialog lives on the player window, which registers this callback.
-    std::function<void()> showPreferencesFn;
+    // dialog lives on the player window, which registers the base
+    // PlayerHost::showPreferencesFn callback.
     void mlShowPreferences() override {
         if (showPreferencesFn) showPreferencesFn();
     }
@@ -1019,7 +1034,7 @@ private:
     bool          m_peaksVisible = true;
     int           m_lastChannels   = 0;
     int           m_lastSampleRate = 0;
-    QtampPlayerWindow *m_window = nullptr;
+    // (m_window lives on the PlayerHost base, set via bindWindow.)
     // EQ DSP state — single, always-on pipeline.  Sink is lazy-
     // initialised on the first buffer at that buffer's format; we
     // never tear it down until QtampHost is destroyed.
@@ -1421,7 +1436,7 @@ public:
         return false;
     }
 
-    explicit QtampPlayerWindow(QtampHost *host, QQuickItem *parent = nullptr)
+    explicit QtampPlayerWindow(PlayerHost *host, QQuickItem *parent = nullptr)
         : qtWasabi::SkinQuickItem(parent), m_host(host) {
         // QQuickItem is hosted by a QQuickView; the view sets
         // FramelessWindowHint + transparent color itself (main()
@@ -1465,25 +1480,28 @@ public:
                 &QtampPlayerWindow::syncMilkdropOverlay);
         tick->start();
 
-        // Immediate repaint when transport state / source changes.
-        connect(&host->player(), &QMediaPlayer::sourceChanged, this,
-                [this](const QUrl &) { fireTitleChange(); update(); });
-        connect(&host->player(), &QMediaPlayer::playbackStateChanged,
-                this, [this](QMediaPlayer::PlaybackState st) {
+        // Immediate repaint when transport state / source changes.  The
+        // PlayerHost signals abstract over the audio backend: QtampHost
+        // forwards its QMediaPlayer signals, RemoteHost fires them from
+        // synced events, so this machinery is backend-agnostic.
+        connect(host, &PlayerHost::sourceChanged, this,
+                [this]() { fireTitleChange(); update(); });
+        connect(host, &PlayerHost::playbackStateChanged, this,
+                [this]() {
             // The Maki System playback callbacks (onPlay/onResume/
             // onPause/onStop) are fired by the engine itself from the
-            // same host status System.getStatus() reads — QMediaPlayer
-            // here only carries metadata, the audible pipeline is the
-            // decoder/sink pair, so dispatching from this signal both
-            // missed real transport changes and could double-fire.
-            m_prevPlaybackState = st;
+            // same host status System.getStatus() reads, so we only
+            // repaint here.
             update();
         });
         // Track metadata arrives asynchronously after the source opens;
         // re-fire System.onTitleChange so the skin's fileinfo.maki
         // (re)populates the Title/Artist/Album/… display lines.
-        connect(&host->player(), &QMediaPlayer::metaDataChanged, this,
+        connect(host, &PlayerHost::metaDataChanged, this,
                 [this] { fireTitleChange(); update(); });
+        // A remote playlist change invalidates the pledit render cache.
+        connect(host, &PlayerHost::playlistChanged, this,
+                [this] { update(); });
 
         // Pick up keyboard events (Esc to close, Ctrl-L for open
         // file, arrow keys for colorthemes scroll).  QQuickItems
@@ -2446,7 +2464,7 @@ public:
         // Pipe the host's real track metadata into the skin's Maki
         // file-info scripts.  Keys are lower-case: "playitem:string",
         // "playitem:displaytitle", "decoder", "meta:<field>".
-        QtampHost *h = m_host;
+        PlayerHost *h = m_host;
         r->setPlayItemMetadataResolver(
             [h](const QString &key) -> QString {
                 if (key == QLatin1String("playitem:string"))       return h->songPath();
@@ -2538,7 +2556,7 @@ public:
         QMenu *bmMenu = menu.addMenu("Bookmarks");
         bmMenu->setStyleSheet(menuStyle);
         QAction *addBmAct = bmMenu->addAction("Add current as bookmark");
-        const QUrl currentSrc = m_host->player().source();
+        const QUrl currentSrc = m_host->currentSourceUrl();
         const QString currentFile = currentSrc.isLocalFile()
             ? currentSrc.toLocalFile() : QString();
         addBmAct->setEnabled(!currentFile.isEmpty());
@@ -2737,7 +2755,7 @@ public:
         else if (sel == aboutAct) {
             // The animated demoscene-style AboutDialog.
             QString skinPath;
-            const QUrl src = m_host->player().source();
+            const QUrl src = m_host->currentSourceUrl();
             if (src.isLocalFile()) skinPath = QFileInfo(src.toLocalFile()).absolutePath();
             AboutDialog about(skinPath, nullptr);
             about.exec();
@@ -3393,9 +3411,9 @@ public:
         // placeholder pointer above; the per-tick syncMilkdropOverlay
         // hides the item when the placeholder is null, and the item
         // stays alive across skin reloads.
-        if (m_milkdropPlaceholder && !m_milkdropItem) {
+        if (m_milkdropPlaceholder && !m_milkdropItem && m_host->analyzerPtr()) {
             m_milkdropItem = new MilkdropItem(this);
-            m_milkdropItem->setAnalyzer(&m_host->analyzer());
+            m_milkdropItem->setAnalyzer(m_host->analyzerPtr());
             m_milkdropItem->setVisible(false);  // until first sync
             // Stack above chrome so the GL surface isn't masked.
             m_milkdropItem->setZ(1000.0);
@@ -3793,7 +3811,7 @@ public:
         walk(mut);
     }
 
-    QtampHost *m_host = nullptr;
+    PlayerHost *m_host = nullptr;
     QPoint     m_dragOrigin;
     bool       m_dragging = false;
     // Script receiver whose onLeftButtonDown claimed the press —

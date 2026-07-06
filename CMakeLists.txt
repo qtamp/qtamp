@@ -104,6 +104,7 @@ endif()
 
 set(QTAMP_SOURCES
     src/main.cpp
+    src/playerhost.h
     src/audiometa.cpp
     src/medialibraryindex.cpp
     src/eq10dsp.cpp
