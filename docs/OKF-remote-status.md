@@ -130,11 +130,46 @@ x86_64 toolchain (qemu binfmt fails to map 4K-aligned segments). Next step:
 `scripts/build-wasm-remote.sh` in the builder, then `cdp-check-remote.mjs`
 against the dist.
 
-## What is next (not built yet)
-- **M6 build+verify** run the builder on the server, cdp-check the dist.
-- **M7** the TeamSpeak music-bot container on the server.
-- **M8** public routing, the browser iframes in the bot's user-info panel, the
-  MacBook native connect, and opening it to friends.
+**M7 — bot container (code complete locally; server deploy pending).** The new
+repo `~/git/ts4party-musicbot` carries the whole container: a two-stage
+Dockerfile (qtamp compiled x86_64 from a staged pinned source tree; runtime =
+the ts6-remote dependency set + Qt6/gstreamer decoders + node), `entry.sh`
+supervising pulseaudio (null sinks `music_out`/`ts_out`), `qtamp --backend
+18800` (PULSE_SINK=music_out), qtamp-pylon :8789, the ts6 bridge pylon :8788 +
+pump :9223, the TS6 client (records `music_out.monitor` as its microphone,
+`--disable-audio-input` binary neutralization) and the driver. The driver
+(`driver/driver.mjs`, plain node) keeps the bot connected
+(spawn/startConnection via the bridge pylon, waits for status 4,
+setRoleAudioCapture with vad/agc/denoise off), mirrors `/music` into the
+playlist (idempotent by path, epoch-aware adoption after backend restarts) and
+autoplays when idle — 6 node:test cases against mocked pylons, all green.
+`deploy/run.sh` guards 8788/8789/9223/18800 loopback-only via nft;
+`deploy/smoke.sh` checks every port plus an audio-RMS gate on
+`music_out.monitor`. **Open:** creating the GitHub repo and the server deploy
+(run.sh needs the user anyway); TS file-transfer ingest is a live-probe
+follow-up — until then `/music` is the drop directory.
+
+**M8 — public routing + iframes (local code done; deploy pending).** In
+ts6-client (feat/bridge-live-tap, pushed): the pylon's `loopback-proxy` plugin
+(`TS6_PROXY_ROUTES="music=http://127.0.0.1:8789,..."` → `/music/*` with the
+prefix stripped, zero-copy responses so SSE streams through; 4 vitest cases,
+full suite 34 green), the client-info player sections in `tsclient-shim.js`
+(gated on the bot UID via localStorage `TS6_MUSIC_BOT_UID`, lazy iframes onto
+`/player/?window=player|pledit&graphql=/api/music/graphql`), and
+`build-docroot.sh` PLAYER_DIST support (bundles the wasm head under
+`/player/` with a no-cache `_headers` rule — js+wasm must deploy as a pair).
+**Open:** live-DOM verification of the shim selectors, the Pages deploy, the
+CF Access service token for the MacBook native connect, and the friends
+policy.
+
+## What is next (blocked on server/user access)
+- **M6 build+verify** run `scripts/build-wasm-remote.sh` in the builder on the
+  build server, then `wasm/test/cdp-check-remote.mjs` against the dist.
+- **M7 deploy** create the GitHub repo, stage server layout, user runs
+  `deploy/run.sh`, record the bot UID, audio E2E in the channel.
+- **M8 deploy** redeploy ts4.party Pages with PLAYER_DIST + shim, set
+  TS6_PROXY_ROUTES on the ts6-remote container, CF Access service token for
+  the MacBook, friends via Zitadel.
 
 Full plan and milestone detail: the session plan file
 (`~/.claude/plans/kannst-du-dich-noch-jolly-cake.md`).
@@ -160,8 +195,11 @@ this to be recorded.
   tests) and the `e2e-remote.sh` full-chain proof; the M5 `--container` root
   window with its screenshot gate; the M6 `QTAMP_WASM_REMOTE` build mode
   (EventSource glue, query-param config, remote host page, build script, mock
-  server + cdp gate); and this documentation. Milestones M7 onward are
-  Fable's to implement.
+  server + cdp gate); the M7 ts4party-musicbot repo (container, entry.sh,
+  driver + its 6 tests); the M8 local pieces in ts6-client (loopback-proxy
+  plugin + tests, client-info player sections, PLAYER_DIST docroot support);
+  and this documentation. The remaining server-side deploys are Fable's to
+  finish next session.
 
 (The pre-existing qtamp and qtWasabi codebase this builds on is the user's own
 prior work, largely authored across earlier sessions; this attribution covers
