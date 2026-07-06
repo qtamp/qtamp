@@ -1310,11 +1310,24 @@ public:
             setActiveGammaset(want);
     }
 
+    // The container this window renders as its root.  "main" is the
+    // classic player; a head can render another container instead
+    // (--container), e.g. the Playlist Editor — one container per
+    // instance, which is how the browser iframes each present a
+    // single window.
+    void setRootContainerId(const QString &id) { m_rootContainerId = id; }
+    QString rootContainerId() const { return m_rootContainerId; }
+    bool isMainRoot() const {
+        return m_rootContainerId.compare(QStringLiteral("main"),
+                                         Qt::CaseInsensitive) == 0;
+    }
+
     // Toggle a secondary container window (EQ / Playlist / etc.).
     // Creates the SkinView lazily on first call.  Layout id matches
     // the skin XML convention — modern skins almost always use
     // "normal" as the default layout name.
     void toggleSubwindow(const QString &containerRef) {
+        if (!isMainRoot()) return;
         // `containerRef` is the skin's TOGGLE param — either a literal
         // container id, a component GUID, or one of Winamp's short
         // component aliases (`pl`, `ml`, `vid`, `vis`, …).  Resolve it
@@ -1342,6 +1355,9 @@ public:
     // `--screenshot-container` capture path so a container window (e.g. the
     // Playlist Editor) can be rendered and grabbed without a compositor.
     qtWasabi::SkinView *ensureSubwindow(const QString &containerRef) {
+        // A single-container head renders exactly one window; TOGGLE
+        // actions and Maki showWindow must not spawn siblings there.
+        if (!isMainRoot()) return nullptr;
         QString containerId =
             qtWasabi::SkinXml::resolveContainerId(m_doc, containerRef);
         if (containerId.isEmpty()) containerId = containerRef;
@@ -2334,7 +2350,7 @@ public:
                 tr("Could not parse %1:\n%2").arg(skinXmlPath, err));
             return;
         }
-        if (!load(doc, "main", "normal", &err)) {
+        if (!load(doc, m_rootContainerId, "normal", &err)) {
             QMessageBox::warning(nullptr, tr("Skin load failed"),
                 tr("Layout expand failed: %1").arg(err));
             return;
@@ -3835,6 +3851,7 @@ public:
     QString           m_activeWidgetId;
     qtWasabi::SkinXml::Document m_doc;
     QHash<QString, qtWasabi::SkinView *> m_subwindows;
+    QString m_rootContainerId = QStringLiteral("main");
     bool m_drawerOpen = true;
     // Hot-reload — XML/script edits trigger reloadSkin via a
     // debounced QFileSystemWatcher.  m_runtime is held so reloadSkin
@@ -4037,6 +4054,13 @@ int main(int argc, char *argv[]) {
   // RemoteHost to --connect, wait for the first snapshot, print one
   // field and exit. No skin, no window.
   const QString probeField = takeStringArg(argc, argv, "--probe");
+  // --container <ref>: render this container as the window's ROOT
+  // instead of "main" — e.g. `--container pl` presents just the
+  // Playlist Editor.  Accepts the same refs as the TOGGLE action
+  // (container id, component GUID, or the pl/ml/vid aliases).  A
+  // non-main root disables subwindow toggles: one container per
+  // process, which is how each browser iframe hosts a single window.
+  const QString rootContainerArg = takeStringArg(argc, argv, "--container");
   if (backendMode && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
       // Headless by default: the QWidget-based playlist model still wants
       // a QPA, offscreen satisfies it without a display server.
@@ -4251,8 +4275,17 @@ int main(int argc, char *argv[]) {
     // QML create the Window, then attach our manually-constructed
     // QtampPlayerWindow item to its contentItem.
     auto *view = new QtampPlayerWindow(host);
-    if (!view->load(doc, "main", "normal", &err)) {
-      fprintf(stderr, "qtamp: layout load failed: %s\n", err.toLocal8Bit().constData());
+    QString rootContainerId = QStringLiteral("main");
+    if (!rootContainerArg.isEmpty()) {
+        rootContainerId =
+            qtWasabi::SkinXml::resolveContainerId(doc, rootContainerArg);
+        if (rootContainerId.isEmpty()) rootContainerId = rootContainerArg;
+        view->setRootContainerId(rootContainerId);
+    }
+    if (!view->load(doc, rootContainerId, "normal", &err)) {
+      fprintf(stderr, "qtamp: layout load failed (container '%s'): %s\n",
+              rootContainerId.toLocal8Bit().constData(),
+              err.toLocal8Bit().constData());
       return 4;
     }
     view->setSkinDocument(doc);
