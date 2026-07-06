@@ -56,7 +56,7 @@ and the pixel-regression suite is still identical (the playlist-signal change is
 behaviour-neutral).
 
 **M4 — RemoteHost + `--connect` + local sync loop (qtamp side done, committed
-`<pending>`).** `src/remotetransport.{h,cpp}` is the transport abstraction:
+`6988468`).** `src/remotetransport.{h,cpp}` is the transport abstraction:
 `HttpTransport` (QNetworkAccessManager POSTs/GETs + a streaming SSE GET feeding
 SseReader, capped-backoff reconnect, CF-Access header support) and
 `InjectedTransport` (the no-network test double). `src/remotehost.{h,cpp}` is a
@@ -71,13 +71,31 @@ transport), and `tests/remote/sync_test.sh` — a real `qtamp --backend` plus a
 real `qtamp --connect` head that **converges to every backend mutation** (play,
 pause, playlist add). The pixel regression is still identical.
 
-Still open in M4: the **qtamp-pylon** (the GraphQL facade over the control
-channel, for the browser/driver) — the native `--connect` path already works
-directly against the control channel, so the pylon is additive.
+**M4b — qtamp-pylon (done).** `pylon/` is the GraphQL facade over the control
+channel, built on the same vendored `@getcronit/pylon` 2.9.5 skeleton as the
+ts6-client bridge pylon. `src/backendlink.ts` mirrors the backend snapshot over
+HTTP+SSE (reconnect forever, `player: null` while down, epoch/revision resync
+semantics matching the C++ `applyEvent`); `src/index.ts` exposes
+`Query.player`, flat mutations (play/pause/stop/seek/volume/pan/eq/playlist ops,
+each forwarding the command and returning refetched state), and the
+`playerEvents`/`playlistEvents` subscriptions (JSON-string scalars, newest-wins
+PushQueue, 5s keepalive). `pylon.config.ts` additionally passes the raw control
+channel through (`/state`, `/events`, `/cmd`, `/art/current`) — so native
+`--connect` heads reach the backend **through the pylon's port unchanged**, and
+GraphQL stays the additive facade for browser/driver. Verified three ways:
+5 BackendLink unit tests against a PROTOCOL.md mock backend, 4 e2e tests booting
+the **built** `.pylon/index.js` over real HTTP (schema mirror, mutation
+forwarding + rejection-as-GraphQL-error, subscription push, passthrough), and
+`scripts/e2e-remote.sh` — the whole production chain minus TS/Cloudflare: a real
+`qtamp --backend`, the built pylon in front, GraphQL mutations through the
+pylon, a real `qtamp --connect` head converging through the passthrough, and a
+GraphQL subscription carrying a pause issued on the backend directly. All green.
+
+With M4+M4b the full local sync loop is proven end to end: any head (native or
+GraphQL client) can mutate, every other head converges.
 
 ## What is next (not built yet)
 
-- **M4b** the qtamp-pylon (GraphQL facade) + its vitest suite.
 - **M5** `--container` root window.
 - **M6** the `QTAMP_WASM_REMOTE` browser build.
 - **M7** the TeamSpeak music-bot container on the server.
@@ -103,8 +121,10 @@ this to be recorded.
   backend mode (`backendserver`, the `PlaylistWindow::changed()` signal, the
   `--backend` wiring) with its integration test; the M4 `RemoteHost` +
   `remotetransport` + the `--connect`/`--probe` wiring, with the `remotehost`
-  unit test and the `sync_test.sh` two-process convergence proof; and this
-  documentation. Milestones M4b (the pylon) onward are Fable's to implement.
+  unit test and the `sync_test.sh` two-process convergence proof; the M4b
+  qtamp-pylon (BackendLink, schema, passthrough plugin, mock backend, 9 vitest
+  tests) and the `e2e-remote.sh` full-chain proof; and this documentation.
+  Milestones M5 onward are Fable's to implement.
 
 (The pre-existing qtamp and qtWasabi codebase this builds on is the user's own
 prior work, largely authored across earlier sessions; this attribution covers
