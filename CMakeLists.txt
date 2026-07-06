@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 # Try Qt6 first, fall back to Qt5
-find_package(Qt6 QUIET COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL OpenGLWidgets Quick Qml)
+find_package(Qt6 QUIET COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL OpenGLWidgets Quick Qml Network)
 if(Qt6_FOUND)
     set(QT_VERSION_MAJOR 6)
     message(STATUS "Building with Qt6")
@@ -19,7 +19,7 @@ if(Qt6_FOUND)
         message(STATUS "Qt6 DBus not found — MPRIS2 disabled (media keys won't work)")
     endif()
 else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL)
+    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets OpenGL Network)
     set(QT_VERSION_MAJOR 5)
     message(STATUS "Building with Qt5 (${Qt5Core_VERSION})")
     if(Qt5Core_VERSION VERSION_LESS "5.12")
@@ -107,6 +107,7 @@ set(QTAMP_SOURCES
     src/playerhost.h
     src/remotestate.cpp
     src/ssereader.cpp
+    src/backendserver.cpp
     src/audiometa.cpp
     src/medialibraryindex.cpp
     src/eq10dsp.cpp
@@ -209,6 +210,7 @@ target_link_libraries(qtamp PRIVATE
     Qt${QT_VERSION_MAJOR}::Multimedia
     Qt${QT_VERSION_MAJOR}::MultimediaWidgets
     Qt${QT_VERSION_MAJOR}::OpenGL
+    Qt${QT_VERSION_MAJOR}::Network
 )
 # Qt6 splits OpenGLWidgets into its own module; Qt5 includes it in Widgets.
 # Qt::Quick + Qt::Qml drive the --qml-renderer SkinQuickItem preview.

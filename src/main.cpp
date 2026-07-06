@@ -37,6 +37,7 @@
 #include "medialibraryindex.h"
 #include "playlistwindow.h"
 #include "playerhost.h"
+#include "backendserver.h"
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -4022,6 +4023,16 @@ int main(int argc, char *argv[]) {
   // is now primary; the flag is silently accepted for backwards
   // compatibility but is a no-op.
   (void)takeFlag(argc, argv, "--qml-renderer");
+  // --backend <port>: run the headless networked-player backend (audio +
+  // playlist + the loopback control channel of pylon/PROTOCOL.md) with no
+  // skin and no windows.  See docs/OKF-remote.md.  Port 0 = ephemeral.
+  const QString backendPortArg = takeStringArg(argc, argv, "--backend");
+  const bool backendMode = !backendPortArg.isEmpty();
+  if (backendMode && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
+      // Headless by default: the QWidget-based playlist model still wants
+      // a QPA, offscreen satisfies it without a display server.
+      qputenv("QT_QPA_PLATFORM", "offscreen");
+  }
 
   // Modern skins paint their own rounded chrome with alpha-cut
   // corners — the host surface needs an alpha channel for those
@@ -4049,6 +4060,59 @@ int main(int argc, char *argv[]) {
   app.setApplicationName("Qtamp");
   app.setApplicationVersion("0.5 BETA");
   app.setOrganizationName("Qtamp");
+
+  if (backendMode) {
+      // The whole backend: the local host (audio pipeline), the hidden
+      // playlist model, and the control channel.  No skin, no windows.
+      auto *host = new QtampHost();
+      auto *pl = new PlaylistWindow(nullptr);
+      QObject::connect(pl, &PlaylistWindow::trackDoubleClicked,
+                       [host](const QString &filePath) {
+                           host->openAndDecode(QUrl::fromLocalFile(filePath));
+                       });
+      host->setPlaylist(pl);
+      QObject::connect(pl, &PlaylistWindow::changed, host,
+                       &PlayerHost::notifyPlaylistChanged);
+
+      // The music root confines open/playlistAddPaths (the pylon forwards
+      // viewer input into this channel).
+      QString musicRoot = qEnvironmentVariable("QTAMP_MUSIC_ROOT");
+      if (musicRoot.isEmpty()) {
+          musicRoot = QStandardPaths::writableLocation(
+              QStandardPaths::MusicLocation);
+      }
+      host->setLibraryRoot(musicRoot.isEmpty() ? QDir::homePath()
+                                               : musicRoot);
+
+      // CLI positional media seeds the playlist (paths need not be under
+      // the music root — the operator launched them, not a viewer).
+      for (int i = 1; i < argc; ++i) {
+          const QString a = QString::fromLocal8Bit(argv[i]);
+          if (a.startsWith(QLatin1Char('-'))) continue;
+          if (QFileInfo(a).isFile()) pl->addTrack(a);
+      }
+
+      qtamp::BackendServer::Hooks hooks;
+      hooks.playlistClear = [pl]() { pl->clearPlaylist(); };
+      hooks.playlistRemoveRows = [pl](const QList<int> &rows) {
+          pl->removeRows(rows);
+      };
+      hooks.eqOn = [host]() { return host->eqEnabled(); };
+      hooks.setEqOn = [host](bool on) { host->setEqEnabled(on); };
+      // EQ auto has no dedicated state in the DSP yet; report off.
+      hooks.eqAuto = []() { return false; };
+      hooks.musicRoot = musicRoot;
+
+      auto *server = new qtamp::BackendServer(host, std::move(hooks), &app);
+      bool okPort = false;
+      const quint16 port = quint16(backendPortArg.toUInt(&okPort));
+      if (!okPort || !server->listen(port)) {
+          fprintf(stderr, "qtamp: --backend: cannot listen on %s\n",
+                  backendPortArg.toLocal8Bit().constData());
+          return 6;
+      }
+      return app.exec();
+  }
 
   // Resolve skin path + renderer kind.  CLI flags win; then saved
   // setting; then a sensible default.  Modern skins are rendered by

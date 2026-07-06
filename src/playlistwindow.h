@@ -186,6 +186,9 @@ public:
     PlaylistWindow(WinampWindow *parent = nullptr);
     void addTrack(const QString &filePath);
     void clearPlaylist();
+    // Remove an explicit row set (the networked backend's
+    // playlistRemoveRows; removeSelected() stays the UI's selection path).
+    void removeRows(QList<int> rows);
     bool isSnapped() const { return isSnappedToMain; }
     void followMain();
     void checkSnap();
@@ -263,6 +266,9 @@ public:
 
 signals:
     void trackDoubleClicked(const QString &filePath);
+    // Row set changed (add/remove/clear/crop) — the networked backend
+    // pushes a playlist event off this.
+    void changed();
 
 protected:
     void paintEvent(QPaintEvent *) override;

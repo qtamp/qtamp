@@ -86,6 +86,10 @@ public:
     // Opens the Preferences dialog (wired by the window that owns it).
     std::function<void()> showPreferencesFn;
 
+    // External model owners (the PlaylistWindow) report row changes here;
+    // signals cannot be emitted from outside the class.
+    void notifyPlaylistChanged() { emit playlistChanged(); }
+
 signals:
     // Replace the direct QMediaPlayer signal connections in the window,
     // so a remote host drives the same repaint/title machinery.

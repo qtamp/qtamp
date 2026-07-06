@@ -22,6 +22,13 @@ target_include_directories(ssereader_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ssereader_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
 add_test(NAME ssereader COMMAND ssereader_test)
 
+# Backend-mode integration test: drives `qtamp --backend` over HTTP with
+# curl. Requires the built qtamp binary; skipped implicitly if curl is
+# absent (the script fails loudly, which CTest reports).
+add_test(NAME backend
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/remote/backend_test.sh
+            $<TARGET_FILE_DIR:qtamp>)
+
 add_custom_target(qtamp_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS wavreader_test remotestate_test ssereader_test)
+    DEPENDS wavreader_test remotestate_test ssereader_test qtamp)

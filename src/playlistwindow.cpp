@@ -285,6 +285,7 @@ void PlaylistWindow::removeSelected() {
     }
     rebuildListDisplay();
     updateTotalTimeDisplay();
+    emit changed();
 }
 
 void PlaylistWindow::cropSelected() {
@@ -302,6 +303,7 @@ void PlaylistWindow::cropSelected() {
     trackDurations = newDurations;
     rebuildListDisplay();
     updateTotalTimeDisplay();
+    emit changed();
 }
 
 void PlaylistWindow::removeDeadFiles() {
@@ -644,6 +646,7 @@ void PlaylistWindow::addTrack(const QString &filePath) {
             }
         }
     }
+    emit changed();
 }
 
 void PlaylistWindow::clearPlaylist() {
@@ -651,6 +654,24 @@ void PlaylistWindow::clearPlaylist() {
     tracks.clear();
     trackDurations.clear();
     updateTotalTimeDisplay();
+    emit changed();
+}
+
+void PlaylistWindow::removeRows(QList<int> rows) {
+    std::sort(rows.begin(), rows.end(), std::greater<int>());
+    bool any = false;
+    for (int row : rows) {
+        if (row >= 0 && row < tracks.size()) {
+            tracks.removeAt(row);
+            if (row < trackDurations.size())
+                trackDurations.removeAt(row);
+            any = true;
+        }
+    }
+    if (!any) return;
+    rebuildListDisplay();
+    updateTotalTimeDisplay();
+    emit changed();
 }
 
 void PlaylistWindow::paintEvent(QPaintEvent *event) {
