@@ -67,6 +67,15 @@ public:
     void openEventStream(const QUrl &url) override;
     void closeEventStream() override;
 
+#ifdef Q_OS_WASM
+    // Raw graphql-sse frames from the EventSource glue get translated
+    // instead of emitted directly.
+    void wasmDeliverEvent(const QByteArray &event,
+                          const QByteArray &data) override {
+        handleSseEvent(event, data);
+    }
+#endif
+
 private:
     QUrl graphqlEndpoint(const QUrl &base) const;
     void execute(const QUrl &base, const QJsonObject &gqlBody,

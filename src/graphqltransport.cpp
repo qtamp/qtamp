@@ -6,6 +6,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
+#include <QUrlQuery>
 
 namespace qtamp {
 
@@ -315,6 +316,20 @@ void GraphQLHttpTransport::getBytes(const QUrl &url, BytesCallback cb) {
 void GraphQLHttpTransport::openEventStream(const QUrl &url) {
     m_base = url;
     m_closing = false;
+#ifdef Q_OS_WASM
+    // Browser: GET-style graphql-sse subscribe URL via the native
+    // EventSource glue (QNetworkReply buffers streams on wasm).
+    {
+        QUrl u = graphqlEndpoint(url);
+        QUrlQuery q;
+        q.addQueryItem(QStringLiteral("query"),
+                       QString::fromLatin1(kPlayerEventsSub));
+        u.setQuery(q);
+        wasmEsOpen(this, u);
+        emit streamStateChanged(true);
+        return;
+    }
+#endif
     if (m_stream) {
         m_stream->abort();
         m_stream = nullptr;
@@ -386,6 +401,9 @@ void GraphQLHttpTransport::scheduleReconnect() {
 
 void GraphQLHttpTransport::closeEventStream() {
     m_closing = true;
+#ifdef Q_OS_WASM
+    wasmEsClose(this);
+#endif
     if (m_stream) {
         m_stream->abort();
         m_stream = nullptr;

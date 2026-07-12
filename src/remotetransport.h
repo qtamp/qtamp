@@ -39,10 +39,29 @@ public:
     virtual void openEventStream(const QUrl &url) = 0;
     virtual void closeEventStream() = 0;
 
+#ifdef Q_OS_WASM
+    // Entry points for the browser EventSource glue (EM_JS blocks in
+    // remotetransport.cpp).  Virtual so protocol transports can
+    // intercept raw frames (GraphQL: `next` frames need translation).
+    virtual void wasmDeliverEvent(const QByteArray &event,
+                                  const QByteArray &data) {
+        emit eventReceived(event, data);
+    }
+    void wasmDeliverState(bool up) { emit streamStateChanged(up); }
+    int m_wasmStreamId = 0;
+#endif
+
 signals:
     void eventReceived(const QByteArray &event, const QByteArray &data);
     void streamStateChanged(bool up);
 };
+
+#ifdef Q_OS_WASM
+// Open/close a browser-native EventSource for `t` (any RemoteTransport);
+// frames arrive via t->wasmDeliverEvent / wasmDeliverState.
+void wasmEsOpen(RemoteTransport *t, const QUrl &url);
+void wasmEsClose(RemoteTransport *t);
+#endif
 
 // The real thing: QNetworkAccessManager for requests, a streaming GET
 // feeding SseReader for events, capped-backoff reconnect. Extra headers
@@ -65,16 +84,6 @@ public:
     void openEventStream(const QUrl &url) override;
     void closeEventStream() override;
 
-#ifdef Q_OS_WASM
-    // Entry points for the browser EventSource glue (the EM_JS blocks in
-    // remotetransport.cpp) — same thread as the Qt event loop in the
-    // singlethreaded wasm build, so emitting directly is safe.
-    void wasmDeliverEvent(const QByteArray &event, const QByteArray &data) {
-        emit eventReceived(event, data);
-    }
-    void wasmDeliverState(bool up) { emit streamStateChanged(up); }
-#endif
-
 private:
     void scheduleReconnect();
     QNetworkRequest makeRequest(const QUrl &url) const;
@@ -86,9 +95,6 @@ private:
     QUrl m_streamUrl;
     int m_backoffMs = 500;
     bool m_closing = false;
-#ifdef Q_OS_WASM
-    int m_wasmStreamId = 0;
-#endif
 };
 
 // Test double: scripted replies, manual event injection, an op log.

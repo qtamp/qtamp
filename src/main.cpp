@@ -4135,6 +4135,9 @@ int main(int argc, char *argv[]) {
               + (v.startsWith(QLatin1Char('/')) ? v
                                                 : QLatin1Char('/') + v);
       connectUrl = v.isEmpty() ? wasmQueryParam("__origin") : v;
+      // Wasabi 2: the browser head speaks the GraphQL API.
+      if (!connectUrl.startsWith(QLatin1String("graphql+")))
+          connectUrl = QStringLiteral("graphql+") + connectUrl;
   }
   if (rootContainerArg.isEmpty()) {
       QString c = wasmQueryParam("container");

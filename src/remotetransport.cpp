@@ -25,8 +25,8 @@
 // its own list).
 namespace qtamp {
 namespace {
-QHash<int, HttpTransport *> &wasmStreams() {
-    static QHash<int, HttpTransport *> reg;
+QHash<int, RemoteTransport *> &wasmStreams() {
+    static QHash<int, RemoteTransport *> reg;
     return reg;
 }
 }  // namespace
@@ -69,7 +69,8 @@ EM_JS(void, qtamp_es_open, (int id, const char *urlPtr), {
     };
     // SSE named events bypass onmessage — subscribe to every event the
     // protocol defines (pylon/PROTOCOL.md).
-    for (const n of ['state', 'transport', 'track', 'playlist', 'eq', 'ping'])
+    for (const n of ['state', 'transport', 'track', 'playlist', 'eq',
+                     'ping', 'next', 'complete'])
         es.addEventListener(n, (e) => push(n, e.data));
     es.onopen = () => _qtamp_es_state(id, 1);
     // EventSource reconnects on its own; just report the drop so the
@@ -83,6 +84,20 @@ EM_JS(void, qtamp_es_close, (int id), {
     }
 });
 // clang-format on
+
+namespace qtamp {
+void wasmEsOpen(RemoteTransport *t, const QUrl &url) {
+    if (!t->m_wasmStreamId) {
+        static int nextId = 0;
+        t->m_wasmStreamId = ++nextId;
+        wasmStreams().insert(t->m_wasmStreamId, t);
+    }
+    qtamp_es_open(t->m_wasmStreamId, url.toString().toUtf8().constData());
+}
+void wasmEsClose(RemoteTransport *t) {
+    if (t->m_wasmStreamId) qtamp_es_close(t->m_wasmStreamId);
+}
+}  // namespace qtamp
 #endif  // Q_OS_WASM
 
 namespace qtamp {
@@ -144,12 +159,7 @@ void HttpTransport::openEventStream(const QUrl &url) {
 #ifdef Q_OS_WASM
     m_streamUrl = url;
     m_closing = false;
-    if (!m_wasmStreamId) {
-        static int nextId = 0;
-        m_wasmStreamId = ++nextId;
-        wasmStreams().insert(m_wasmStreamId, this);
-    }
-    qtamp_es_open(m_wasmStreamId, url.toString().toUtf8().constData());
+    wasmEsOpen(this, url);
     return;
 #endif
     m_streamUrl = url;
@@ -193,7 +203,7 @@ void HttpTransport::scheduleReconnect() {
 void HttpTransport::closeEventStream() {
     m_closing = true;
 #ifdef Q_OS_WASM
-    if (m_wasmStreamId) qtamp_es_close(m_wasmStreamId);
+    wasmEsClose(this);
 #endif
     if (m_stream) {
         m_stream->abort();
