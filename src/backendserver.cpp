@@ -119,6 +119,17 @@ RemoteSnapshot BackendServer::buildSnapshot() const {
     s.track.bitrate = m_host->bitrate();
     s.track.sampleRate = m_host->sampleRate();
     s.track.channels = m_host->channelCount();
+    // Rich metadata, additive: canonical lower-case field names the
+    // host can resolve (empty answers are omitted from the wire).
+    static const char *const kMetaFields[] = {
+        "albumartist", "genre",    "year",    "track",
+        "disc",        "composer", "publisher", "comment"};
+    s.track.meta.clear();
+    for (const char *f : kMetaFields) {
+        const QString v =
+            m_host->playItemMetaData(QLatin1String(f));
+        if (!v.isEmpty()) s.track.meta.insert(QLatin1String(f), v);
+    }
 
     s.playlist.revision = m_playlistRevision;
     s.playlist.currentIndex = m_host->playlistCurrentRow();
@@ -131,6 +142,11 @@ RemoteSnapshot BackendServer::buildSnapshot() const {
 
     s.eq.on = m_hooks.eqOn ? m_hooks.eqOn() : false;
     s.eq.autoOn = m_hooks.eqAuto ? m_hooks.eqAuto() : false;
+    {
+        const double p = m_host->sliderPosition(QStringLiteral("EQ_BAND"),
+                                                QStringLiteral("preamp"));
+        s.eq.preamp = p < 0.0 ? 31 : qBound(0, qRound(p * 63.0), 63);
+    }
     for (int b = 0; b < 10; ++b) {
         const double p = m_host->sliderPosition(QStringLiteral("EQ_BAND"),
                                                 QString::number(b));
@@ -406,8 +422,10 @@ QJsonObject BackendServer::handleCmd(const QJsonObject &cmd, bool *ok) {
         m_host->setSliderPosition(QStringLiteral("EQ_BAND"), value / 63.0,
                                   QString::number(band));
     } else if (op == QLatin1String("setEqPreamp")) {
-        // No preamp axis in the current DSP; accepted for forward
-        // compatibility, ignored.
+        const int value =
+            qBound(0, args.value(QLatin1String("value")).toInt(31), 63);
+        m_host->setSliderPosition(QStringLiteral("EQ_BAND"), value / 63.0,
+                                  QStringLiteral("preamp"));
     } else if (op == QLatin1String("playlistPlayRow") ||
                op == QLatin1String("playlistSetCurrentRow")) {
         if (!checkPlaylistRevision())

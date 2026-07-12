@@ -751,6 +751,11 @@ public:
     // the user clicks the corresponding buttons.
     void setEqEnabled(bool on) { m_eqEnabled = on; }
     bool eqEnabled() const     { return m_eqEnabled; }
+    // EQ "auto" (per-song preset auto-load).  qtamp has no preset
+    // library yet, so the flag is pure stored state: it round-trips
+    // through the channel/GraphQL and the skin's AUTO indicator.
+    void setEqAuto(bool on) { m_eqAuto = on; }
+    bool eqAuto() const     { return m_eqAuto; }
 
     // Maki System.setEqBand(band,val)/getEqBand(band): Wasabi's signed gain
     // (-127..127, 0 = flat, +127 = full boost) mapped onto the same 0..63
@@ -1068,6 +1073,7 @@ private:
     int  m_eqBandSlider[10] = {31,31,31,31,31,31,31,31,31,31};
     int  m_eqPreampSlider   = 31;
     bool m_eqEnabled        = false;
+    bool m_eqAuto           = false;
 
     int eqBandSliderValue(const QString &param) const {
         if (param.compare(QLatin1String("preamp"),
@@ -4310,8 +4316,8 @@ int main(int argc, char *argv[]) {
       };
       hooks.eqOn = [host]() { return host->eqEnabled(); };
       hooks.setEqOn = [host](bool on) { host->setEqEnabled(on); };
-      // EQ auto has no dedicated state in the DSP yet; report off.
-      hooks.eqAuto = []() { return false; };
+      hooks.eqAuto = [host]() { return host->eqAuto(); };
+      hooks.setEqAuto = [host](bool on) { host->setEqAuto(on); };
       hooks.musicRoot = musicRoot;
 
       auto *server = new qtamp::BackendServer(host, std::move(hooks), &app);
