@@ -257,6 +257,10 @@ if(QTAMP_USE_QTWASABI)
     if(TARGET qtwasabi_remote)
         target_link_libraries(qtamp PRIVATE qtwasabi_remote)
     endif()
+    # The head framework (qtWasabi::head, V5).
+    if(TARGET qtwasabi_head)
+        target_link_libraries(qtamp PRIVATE qtwasabi_head)
+    endif()
     # The player-protocol sidecar (qtWasabi::serve, V4; needs grpc++).
     if(TARGET qtwasabi_serve)
         target_link_libraries(qtamp PRIVATE qtwasabi_serve)
