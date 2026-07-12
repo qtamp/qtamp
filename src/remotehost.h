@@ -92,7 +92,9 @@ public:
     QUrl currentSourceUrl() const override {
         return QUrl::fromLocalFile(m_snap.track.filename);
     }
-    bool isRemote() const override { return true; }
+    qtWasabi::HostCapabilities hostCapabilities() const override {
+        return {/*localFiles=*/false, /*localAnalyzer=*/false};
+    }
 
 private:
     void resync();
