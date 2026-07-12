@@ -1364,3 +1364,11 @@ void PreferencesDialog::onSkinSelected(QListWidgetItem *item)
         emit skinChanged(fullPath);
     }
 }
+
+void PreferencesDialog::addExternalPage(const QString &title,
+                                        QWidget *page) {
+    auto *item = new QTreeWidgetItem(treeWidget);
+    item->setText(0, title);
+    const int idx = stackedWidget->addWidget(page);
+    item->setData(0, Qt::UserRole, idx);
+}

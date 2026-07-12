@@ -46,6 +46,7 @@
 #include <qtWasabi/FakeHost.h>
 #include <qtWasabi/head/HeadChrome.h>
 #include <qtWasabi/head/HeadWindow.h>
+#include <qtWasabi/head/HeadPreferences.h>
 #include <qtWasabi/head/HeadWiring.h>
 #include "skinutils.h"
 #include "translator.h"
@@ -1576,6 +1577,10 @@ public:
     void openPreferences() {
         auto *prefs = new PreferencesDialog(nullptr);
         prefs->setStyleSheet(themedDialogStyle());   // tint to the skin
+        // The framework's backend picker rides into qtamp's dialog —
+        // one Connection page for every head.
+        prefs->addExternalPage(QStringLiteral("Connection"),
+                               new qtWasabi::head::ConnectionPage(this));
         // Feed the active skin's Color Themes into the dialog's picker, and
         // apply a chosen one live — setActiveGammaset re-tints the skin and
         // (via our override) this very dialog.  Show "Default colors"
@@ -2133,9 +2138,45 @@ static qtWasabi::remote::RemoteTransport *makeRemoteTransport(QString &connectUr
     }
     // GraphQL is the only head data path; plain http(s):// means the
     // pylon's GraphQL endpoint (the graphql+ prefix stays accepted).
+    const QString original = connectUrl;
     if (connectUrl.startsWith(QLatin1String("graphql+")))
         connectUrl = connectUrl.mid(int(qstrlen("graphql+")));
-    return new qtWasabi::remote::GraphQLHttpTransport();
+    auto *t = new qtWasabi::remote::GraphQLHttpTransport();
+    // Bearer token for a token-gated remote pylon: QTAMP_BEARER_TOKEN
+    // wins; otherwise the token stored with a matching backend entry
+    // (Preferences > Connection).  The unix-socket path never needs
+    // one (filesystem trust).  Note: the wasm GET-subscribe leg cannot
+    // send headers (browser EventSource) — wasm+token is an open gap
+    // until the pylon grows a query-param fallback.
+    QString token;
+    if (qEnvironmentVariableIsSet("QTAMP_BEARER_TOKEN")) {
+        // Set-but-empty is an explicit "no token" override.
+        token = qEnvironmentVariable("QTAMP_BEARER_TOKEN");
+    } else {
+        // Canonicalize both sides (graphql+ prefix, trailing slash) —
+        // an exact-string miss would silently connect unauthenticated.
+        auto canon = [](QString u) {
+            if (u.startsWith(QLatin1String("graphql+")))
+                u = u.mid(int(qstrlen("graphql+")));
+            while (u.endsWith(QLatin1Char('/'))) u.chop(1);
+            return u;
+        };
+        const QString want = canon(original);
+        const auto entries =
+            qtWasabi::head::HeadPreferences::loadBackends(configPath());
+        for (const auto &e : entries) {
+            if (canon(e.url) == want) {
+                token = e.token;
+                break;
+            }
+        }
+    }
+    if (!token.isEmpty()) {
+        t->setExtraHeaders({{QByteArrayLiteral("Authorization"),
+                             QByteArrayLiteral("Bearer ") +
+                                 token.toUtf8()}});
+    }
+    return t;
 }
 
 int main(int argc, char *argv[]) {
@@ -2173,6 +2214,25 @@ int main(int argc, char *argv[]) {
   // --connect <url>: run the normal player UI but backed by a RemoteHost
   // synced to a networked backend at <url> (the docs/PROTOCOL.md root).
   QString connectUrl = takeStringArg(argc, argv, "--connect");
+  // No --connect: honour the backend chosen in Preferences > Connection
+  // (empty active = the local default, today's embedded player).
+  if (connectUrl.isEmpty()) {
+      const QString active =
+          qtWasabi::head::HeadPreferences::activeBackend(configPath());
+      if (!active.isEmpty()) {
+          const auto entries =
+              qtWasabi::head::HeadPreferences::loadBackends(configPath());
+          for (const auto &e : entries) {
+              if (e.name == active) {
+                  connectUrl = e.url;
+                  fprintf(stderr,
+                          "qtamp: connecting to stored backend '%s'\n",
+                          active.toLocal8Bit().constData());
+                  break;
+              }
+          }
+      }
+  }
   // --probe <field>: headless connectivity check (tests). Connect a
   // RemoteHost to --connect, wait for the first snapshot, print one
   // field and exit. No skin, no window.

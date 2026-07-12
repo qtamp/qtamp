@@ -24,6 +24,13 @@ add_test(NAME menu_dump
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/regression/menu_dump_test.sh
             $<TARGET_FILE_DIR:qtamp>)
 
+# Bearer-token plumbing (V5e): the head sends the exact Authorization
+# header the pylon gate compares against — from env or a stored
+# backend entry.
+add_test(NAME bearer_header
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/remote/bearer_header_test.sh
+            $<TARGET_FILE_DIR:qtamp>)
+
 add_custom_target(qtamp_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     DEPENDS wavreader_test qtamp)

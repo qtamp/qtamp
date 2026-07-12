@@ -165,6 +165,13 @@ signals:
 private:
     QTreeWidget *treeWidget;
     QStackedWidget *stackedWidget;
+
+public:
+    // Append an externally-built page as a top-level tree entry (the
+    // framework's Connection page rides in through this).
+    void addExternalPage(const QString &title, QWidget *page);
+
+private:
     QString defaultSkinPath;
 
     QWidget *createGeneralPage();
