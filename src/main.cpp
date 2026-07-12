@@ -40,6 +40,7 @@
 #include "backendserver.h"
 #include "remotehost.h"
 #include "remotetransport.h"
+#include "graphqltransport.h"
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -4054,6 +4055,25 @@ namespace qtWasabi { namespace ml { void installMlHostFactory(); } }
 // Real in-player playlist renderer for the Playlist GUID.
 namespace qtWasabi { void installPleditHostFactory(); }
 
+// --connect scheme -> transport factory.  Wasabi 2 schemes:
+//   graphql+http://host/...   GraphQL over TCP (the pylon)
+//   graphql+https://host/...  GraphQL over TLS/edge
+//   graphql+unix:///path.sock GraphQL over a local unix socket
+// plain http(s):// stays the legacy control channel during migration.
+static qtamp::RemoteTransport *makeRemoteTransport(QString &connectUrl) {
+    if (connectUrl.startsWith(QLatin1String("graphql+unix://"))) {
+        const QString path =
+            connectUrl.mid(int(qstrlen("graphql+unix://")));
+        connectUrl = QStringLiteral("http://qtwasabi.local");  // placeholder
+        return new qtamp::GraphQLLocalTransport(path);
+    }
+    if (connectUrl.startsWith(QLatin1String("graphql+"))) {
+        connectUrl = connectUrl.mid(int(qstrlen("graphql+")));
+        return new qtamp::GraphQLHttpTransport();
+    }
+    return new qtamp::HttpTransport();
+}
+
 int main(int argc, char *argv[]) {
   // Register the gen_ml-shaped MlHostRenderer as the canonical ML
   // windowholder GUID's default backing.  Skin-agnostic — replaces
@@ -4163,8 +4183,8 @@ int main(int argc, char *argv[]) {
   if (!probeField.isEmpty() && !connectUrl.isEmpty()) {
       // Headless probe: connect, wait for the first snapshot, print the
       // requested field, exit. Used by tests/remote/sync_test.sh.
-      auto *host = new qtamp::RemoteHost(QUrl(connectUrl),
-                                         new qtamp::HttpTransport());
+      qtamp::RemoteTransport *transport = makeRemoteTransport(connectUrl);
+      auto *host = new qtamp::RemoteHost(QUrl(connectUrl), transport);
       auto printAndExit = [host, probeField]() {
           QString out;
           if (probeField == QLatin1String("playing"))
@@ -4303,8 +4323,8 @@ int main(int argc, char *argv[]) {
     PlayerHost *host = nullptr;
     PlaylistWindow *modernPl = nullptr;
     if (!connectUrl.isEmpty()) {
-        host = new qtamp::RemoteHost(QUrl(connectUrl),
-                                     new qtamp::HttpTransport());
+        qtamp::RemoteTransport *transport = makeRemoteTransport(connectUrl);
+        host = new qtamp::RemoteHost(QUrl(connectUrl), transport);
         fprintf(stderr, "qtamp: remote head connected to %s\n",
                 connectUrl.toLocal8Bit().constData());
     } else {

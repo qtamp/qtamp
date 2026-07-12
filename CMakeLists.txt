@@ -109,6 +109,7 @@ set(QTAMP_SOURCES
     src/ssereader.cpp
     src/backendserver.cpp
     src/remotetransport.cpp
+    src/graphqltransport.cpp
     src/remotehost.cpp
     src/audiometa.cpp
     src/medialibraryindex.cpp
