@@ -45,6 +45,7 @@
 #include <qtWasabi/remote/GraphQLTransport.h>
 #include <qtWasabi/FakeHost.h>
 #include <qtWasabi/head/HeadChrome.h>
+#include <qtWasabi/head/HeadWindow.h>
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -1339,89 +1340,17 @@ public:
     }
 };
 
-class QtampPlayerWindow : public qtWasabi::SkinQuickItem {
+class QtampPlayerWindow : public qtWasabi::head::HeadWindow {
 public:
-    // Keep the parsed skin Document around so we can spin off
-    // secondary windows (EQ / Playlist) that load other containers
-    // from the same skin on demand.
-    void setSkinDocument(qtWasabi::SkinXml::Document doc) {
-        m_doc = std::move(doc);
-        // The base-class m_doc was captured by load() as a pointer
-        // into the CALLER's stack-local Document.  After we take
-        // ownership here, that base pointer dangles — re-point it
-        // at the now-member-owned copy so paint paths can keep
-        // dereferencing it safely.
-        setDocument(&m_doc);
-        wireMilkdrop();
-    }
+    // A fresh skin document was adopted (initial load or reload):
+    // rewire the MilkDrop overlay against the new widget tree.
+    void skinDocumentChanged() override { wireMilkdrop(); }
 
-    // Apply the player's colour theme (Wasabi "gammaset") after a skin
-    // load.  Real Winamp remembers the chosen colour theme; we mirror
-    // that.  Critically, the Bento family ships its frame borders/bevels
-    // as near-black SOURCE bitmaps and relies on a `boost=1` colour
-    // theme to lift them to the intended grey.  The skin's auto-marked
-    // `*Default` gammaset is `boost=0` (an identity-ish transform) so it
-    // leaves that chrome flat black — which is NOT how the skin is meant
-    // to look (the file-info|playlist seam reads as a black gap instead
-    // of a grey divider).  Restore the user's saved choice; otherwise
-    // prefer a flat-grey theme when the skin offers one, else fall back
-    // to whatever the engine auto-selected.  Engine-level/general: keyed
-    // off the theme NAME, not any per-skin widget id.
-    void applyPreferredColorTheme() {
-        // Offer the synthetic per-role recolor themes on EVERY skin (they
-        // sit alongside the skin's own themes, never replace them).  Tag any
-        // untagged bitmaps with a role from the widget tree, then synthesize
-        // themes that recolour each gammagroup the skin actually uses (its
-        // own "Backgrounds"/"Buttons"/… names plus the freshly tagged ones)
-        // by that role.
-        if (!gammasets().hasSyntheticStyles()) {
-            // A theme-less skin opts into accenting its drawer panels (the
-            // only large always-visible "spare" element on skins like
-            // HeadAMP, whose side drawers are the speaker ears).
-            registry().assignRolesFromWidgetTree(
-                tree(), gammasets().hadNoNativeThemes());
-            gammasets().injectSyntheticThemes(registry().usedGammagroups());
-            registry().clearAccentRegions();
-            // The lightning-bolt logo takes the body tint like the spectrum/
-            // file icons (no accent region).  HeadAMP's "Balance" and "Volume"
-            // labels are baked into the EQ-drawer body bitmap, so the body
-            // tint turns them purple while the neighbouring "reset" button (a
-            // separate bitmap) is themed as a button.  Tint just the label
-            // glyphs with the button role so they read the same as reset.
-            if (gammasets().hadNoNativeThemes() &&
-                m_doc.skinDir.contains(QStringLiteral("HeadAMP"),
-                                       Qt::CaseInsensitive))
-                registry().setRegionGroup(QStringLiteral("bg.drawerLeft"),
-                                          QRect(108, 31, 149, 13),
-                                          QStringLiteral("syn.button"), 80);
-        }
-        const QStringList have = gammasets().names();
-        if (have.isEmpty()) return;
-        QSettings s(configPath(), QSettings::IniFormat);
-        QString want = s.value(QStringLiteral("player/colortheme")).toString();
-        // Test override: WASABIQT_COLORTHEME forces a colour theme for the
-        // run (set it EMPTY to fall back to the skin's own dark auto-default
-        // `*Default`).  Lets the offscreen pipeline compare against stock
-        // Winamp instead of whatever synthetic recolor the user has saved.
-        if (qEnvironmentVariableIsSet("WASABIQT_COLORTHEME"))
-            want = qEnvironmentVariable("WASABIQT_COLORTHEME");
-        // ONLY honour an explicit saved choice.  Do NOT auto-pick a grey
-        // theme: the reference look is the skin's dark auto-default
-        // (`*Default`), and overriding it greyed the whole player.
-        if (!want.isEmpty() && have.contains(want))
-            setActiveGammaset(want);
-    }
-
-    // The container this window renders as its root.  "main" is the
-    // classic player; a head can render another container instead
-    // (--container), e.g. the Playlist Editor — one container per
-    // instance, which is how the browser iframes each present a
-    // single window.
-    void setRootContainerId(const QString &id) { m_rootContainerId = id; }
-    QString rootContainerId() const { return m_rootContainerId; }
-    bool isMainRoot() const {
-        return m_rootContainerId.compare(QStringLiteral("main"),
-                                         Qt::CaseInsensitive) == 0;
+    // Old-document resources: open subwindows belong to the previous
+    // skin doc and must not survive a reload.
+    void aboutToReloadSkin() override {
+        for (auto *w : std::as_const(m_subwindows)) if (w) w->deleteLater();
+        m_subwindows.clear();
     }
 
     // Toggle a secondary container window (EQ / Playlist / etc.).
@@ -1558,15 +1487,15 @@ public:
     }
 
     explicit QtampPlayerWindow(qtWasabi::PlayerHost *host, QQuickItem *parent = nullptr)
-        : qtWasabi::SkinQuickItem(parent), m_host(host) {
+        : qtWasabi::head::HeadWindow(host, parent) {
         // QQuickItem is hosted by a QQuickView; the view sets
         // FramelessWindowHint + transparent color itself (main()
         // creates the view).  No setAttribute/setWindowFlags here —
         // those are QWidget APIs that don't apply to items.
 
-        // Hand the Host to SkinQuickItem so paintInto pulls live
-        // display strings AND <slider> thumb positions from it.
-        setHost(host);
+        // Head-local state (colour theme, vis prefs) lives in
+        // winamp.conf.
+        setSettingsFile(configPath());
 
         // The ML Library button's "Media Library Preferences..." routes
         // to the same Preferences dialog as the player's own menu.
@@ -2444,188 +2373,6 @@ public:
     // path off the PreferencesDialog's `skinChanged(path)` signal.
     // Also used by the hot-reload watcher when a skin XML file changes
     // on disk.
-    void reloadSkin(const QString &skinXmlPath) {
-        qtWasabi::SkinXml::Document doc;
-        QString err;
-        if (!qtWasabi::SkinXml::parse(skinXmlPath, doc, &err)) {
-            QMessageBox::warning(nullptr, tr("Skin load failed"),
-                tr("Could not parse %1:\n%2").arg(skinXmlPath, err));
-            return;
-        }
-        if (!load(doc, m_rootContainerId, "normal", &err)) {
-            QMessageBox::warning(nullptr, tr("Skin load failed"),
-                tr("Layout expand failed: %1").arg(err));
-            return;
-        }
-        setSkinDocument(doc);
-        applyPreferredColorTheme();
-        // Adopt the new skin's native layout size on the host window.
-        // SkinQuickItem::load() updates `m_nativeSize` via the parsed
-        // `<layout w h>` and we propagate that to the QQuickWindow so
-        // the OS window matches.  Without this, switching from a
-        // smaller skin (WinampModernPP, 354x164) to a wider one
-        // (Bento 800x600, Big Bento 1024x600) leaves the window at
-        // the old size and the new skin's right/bottom chrome
-        // overflows the viewport.  The reverse case is also broken —
-        // a tall skin loaded into a tiny window paints only its top
-        // band.  Skin-agnostic: every skin gets resized to its own
-        // declared native size.
-        if (auto *w = window()) {
-            const QSize ns = layoutNativeSize();
-            if (ns.isValid() && !ns.isEmpty()) {
-                w->setMinimumSize(QSize(0, 0));
-                w->setMaximumSize(QSize(16777215, 16777215));
-                w->resize(ns);
-                setSize(QSizeF(ns));
-            }
-        }
-        // Any previously-open subwindows belong to the old skin doc.
-        for (auto *w : std::as_const(m_subwindows)) if (w) w->deleteLater();
-        m_subwindows.clear();
-        auto &mutableTree = const_cast<qtWasabi::Layout::ResolvedWidget &>(
-            tree());
-        qtWasabi::Layout::runKnownScripts(mutableTree,
-                                          layoutNativeSize().width());
-        // Wire stepper buttons (Decrease/Increase + Display text)
-        // to their sibling cfgattrib slider.  Engine-level — works
-        // for any Wasabi skin that follows the canonical naming
-        // convention.
-        qtWasabi::Layout::wireSteppers(mutableTree);
-        rebuildWindowRegion();
-        // Re-run the Maki VM if the embedder gave us a runtime handle.
-        // reset() tears down the prior VM state (scripts, system objects,
-        // widget objects, global tables) so the new skin starts clean
-        // — otherwise the previous skin's scripts keep firing alongside
-        // the new ones.
-        if (m_runtime) {
-            m_runtime->reset();
-            m_runtime->loadScripts(doc, mutableTree);
-            // Resolve every widget's effective pixel rect against the
-            // real layout size BEFORE scripts run, so Maki getWidth()/
-            // getHeight() on relat-sized groups (e.g. Bento's logo
-            // holder w="0" relatw="1") return the true ~200px instead
-            // of 0 — fixing the clipped WINAMP logo centering.
-            mutableTree.cacheResolvedRects(QPoint(0, 0),
-                                           layoutNativeSize());
-            m_runtime->dispatchOnScriptLoaded();
-            m_runtime->dispatchXuiParams(mutableTree);
-            // Fire the initial onResize on every script that registered
-            // a handler.  configtabs.m centres drawer.content via this
-            // path; WASABIQT_NO_FIRE_RESIZE=1 skips it for offscreen
-            // regression baselines that want the pre-resize chrome.
-            if (!::getenv("WASABIQT_NO_FIRE_RESIZE")) {
-                m_runtime->dispatchInitialResize(
-                    layoutNativeSize().width(),
-                    layoutNativeSize().height());
-            }
-        }
-        // dispatchInitialResize (called above) drives the playlist enlarge
-        // through the Maki VM's onResize fixpoint.  Just re-cache so paint +
-        // hit-test see the settled column.
-        mutableTree.cacheResolvedRects(QPoint(0, 0), layoutNativeSize());
-        update();
-    }
-
-    // Hot-reload: watch every XML file under the skin directory for
-    // changes and trigger a full reload via `reloadSkin(rootXml)`
-    // ~250 ms after the last save batches.
-    // Useful for skin authors iterating on layout / colour / script
-    // edits without restarting qtamp.  Idempotent — calling again
-    // with a new root path swaps the watcher's directory.
-    void installHotReloadWatcher(const QString &rootXmlPath) {
-        const QString skinDir = QFileInfo(rootXmlPath).absolutePath();
-        if (!m_skinWatcher) {
-            m_skinWatcher = new QFileSystemWatcher(this);
-            m_reloadDebounce = new QTimer(this);
-            m_reloadDebounce->setSingleShot(true);
-            m_reloadDebounce->setInterval(250);
-            connect(m_reloadDebounce, &QTimer::timeout, this,
-                [this]() {
-                    if (!m_hotReloadRoot.isEmpty()) {
-                        fprintf(stderr,
-                            "[hot-reload] reloading %s\n",
-                            m_hotReloadRoot.toLocal8Bit().constData());
-                        reloadSkin(m_hotReloadRoot);
-                    }
-                });
-            connect(m_skinWatcher,
-                    &QFileSystemWatcher::fileChanged,
-                    this, [this](const QString &) {
-                        m_reloadDebounce->start();
-                    });
-            connect(m_skinWatcher,
-                    &QFileSystemWatcher::directoryChanged,
-                    this, [this](const QString &) {
-                        m_reloadDebounce->start();
-                    });
-        }
-        // Swap targets.
-        const QStringList prevFiles = m_skinWatcher->files();
-        const QStringList prevDirs  = m_skinWatcher->directories();
-        if (!prevFiles.isEmpty()) m_skinWatcher->removePaths(prevFiles);
-        if (!prevDirs.isEmpty())  m_skinWatcher->removePaths(prevDirs);
-
-        m_hotReloadRoot = rootXmlPath;
-        m_skinWatcher->addPath(skinDir);
-
-        QDirIterator it(skinDir, {"*.xml", "*.maki", "*.m"},
-                        QDir::Files, QDirIterator::Subdirectories);
-        QStringList xmls;
-        while (it.hasNext()) xmls << it.next();
-        if (!xmls.isEmpty()) m_skinWatcher->addPaths(xmls);
-    }
-
-    // The Maki runtime, for the OS-resize handler to re-fire onResize.
-    qtWasabi::SkinRuntime *skinRuntime() const { return m_runtime; }
-
-    // Hand the SkinRuntime to the window so reloadSkin can reset it.
-    void setSkinRuntime(qtWasabi::SkinRuntime *r) {
-        m_runtime = r;
-        if (!r || !m_host) return;
-        // Pipe the host's real track metadata into the skin's Maki
-        // file-info scripts.  Keys are lower-case: "playitem:string",
-        // "playitem:displaytitle", "decoder", "meta:<field>".
-        qtWasabi::PlayerHost *h = m_host;
-        r->setPlayItemMetadataResolver(
-            [h](const QString &key) -> QString {
-                if (key == QLatin1String("playitem:string"))       return h->songPath();
-                if (key == QLatin1String("playitem:displaytitle")) return h->playItemDisplayTitle();
-                if (key == QLatin1String("decoder"))               return h->decoderName();
-                // Live data sources (otherwise unbound→0 in the VM).
-                // Milliseconds — the Maki scale: getPlayItemLength()/
-                // getPosition() return core ms and scripts feed them
-                // straight into integerToTime(ms).
-                if (key == QLatin1String("playitem:length"))
-                    return QString::number(h->durationMs());
-                if (key == QLatin1String("playitem:position"))
-                    return QString::number(h->positionMs());
-                if (key == QLatin1String("playlist:length"))
-                    return QString::number(h->playlistRowCount());
-                if (key == QLatin1String("playlist:index"))
-                    return QString::number(h->playlistCurrentRow());
-                if (key == QLatin1String("songinfo"))
-                    // No live multi-line song-info blob; empty is the
-                    // correct neutral (vs an int-0→"0" that would leak the
-                    // channel/bitrate guards).
-                    return QString();
-                if (key.startsWith(QLatin1String("meta:")))
-                    return h->playItemMetaData(key.mid(5));
-                return QString();
-            });
-    }
-
-    // (Re)fire System.onTitleChange on every loaded script so the
-    // skin's fileinfo.maki reloads the track-info display.  Safe to
-    // call before a skin/runtime exists (no-op).
-    void fireTitleChange() {
-        if (qEnvironmentVariableIntValue("WASABIQT_TRACE_META") == 1)
-            qInfo("[meta] fireTitleChange: runtime=%p host=%p title='%s'",
-                  (void *)m_runtime, (void *)m_host,
-                  m_host ? m_host->playItemDisplayTitle().toLocal8Bit().constData() : "");
-        if (m_runtime && m_host)
-            m_runtime->dispatchTitleChange(m_host->playItemDisplayTitle());
-    }
-
 private:
     // Winamp-style right-click context menu.  Items that map onto
     // qtamp's host surface (Play file, Recent files, Bookmarks,
@@ -2977,132 +2724,6 @@ public:
     // so an already-open dialog or popup follows the new theme live, not
     // just the next one opened.  The skin re-tints itself through the base
     // class; we add the chrome on top.
-    void setActiveGammaset(const QString &name) override {
-        qtWasabi::SkinQuickItem::setActiveGammaset(name);
-        restyleOpenChrome();
-    }
-
-    // Re-apply the skin-derived stylesheets to every chrome window that's
-    // visible right now.  General by construction: every QDialog / QMenu
-    // we create is themed, so a single sweep of the top-level widgets (and
-    // their nested submenus) keeps them all in sync with the active theme.
-    void restyleOpenChrome() {
-        qtWasabi::head::restyleOpenChrome(themedDialogStyle(),
-                                          themedMenuStyle());
-    }
-
-    // Wayland will only create a *grabbing* popup (one that holds keyboard
-    // focus) if the popup declares a transient parent and that parent
-    // recently held input.  Our main window is a QQuickWindow with no
-    // QWidget ancestor for a QMenu to inherit from, so a parentless menu
-    // fails to grab — and without the grab the menu gets no keyboard focus,
-    // which is why Up/Down and the Left/Right menu-bar sweep do nothing.
-    // Realise the menu's platform window and point it at the QQuickWindow.
-    void prepareMenuForWayland(QMenu &menu) {
-        qtWasabi::head::prepareMenuForWayland(menu, window());
-    }
-
-    // Headless self-test (WASABIQT_SELFTEST_CHROME=<themeName>) for the
-    // two theme-related fixes that can't be screenshotted: (1) the
-    // menu-bar prev/next ring the Left/Right keys walk resolves to live
-    // widgets, and (2) the menu + dialog chrome actually changes colour
-    // when the colour theme switches.  Prints PASS/FAIL to stderr.
-    void runChromeSelfTest(const QString &themeName) {
-        fprintf(stderr, "[selftest] color themes (%d): %s\n",
-                int(gammasets().names().size()),
-                gammasets().names().join(QStringLiteral(", "))
-                    .toLocal8Bit().constData());
-        // (1) menu-bar ring: every <menu> with a next/prev points at a
-        // widget that still exists (this is exactly what chainByAttr does).
-        QList<const qtWasabi::Widget *> menus;
-        std::function<void(const qtWasabi::Widget &)> collect =
-            [&](const qtWasabi::Widget &w) {
-            if (w.tag == QLatin1String("menu") &&
-                !w.attrs.value(QStringLiteral("menu")).isEmpty())
-                menus.append(&w);
-            for (const auto &c : w.children) if (c) collect(*c);
-        };
-        collect(tree());
-        int ringOk = 0, ringTot = 0;
-        for (const qtWasabi::Widget *m : menus) {
-            const QString nx = m->attrs.value(QStringLiteral("next"));
-            const QString pv = m->attrs.value(QStringLiteral("prev"));
-            if (nx.isEmpty() && pv.isEmpty()) continue;
-            ++ringTot;
-            const bool nOk = nx.isEmpty() || qtWasabi::Widget::findById(nx);
-            const bool pOk = pv.isEmpty() || qtWasabi::Widget::findById(pv);
-            if (nOk && pOk) ++ringOk;
-            const QRect r = m->lastCanvasRect;
-            fprintf(stderr,
-                    "[selftest] menu '%s' rect=%d,%d,%dx%d next=%s%s prev=%s%s\n",
-                    m->id.toLocal8Bit().constData(),
-                    r.x(), r.y(), r.width(), r.height(),
-                    nx.toLocal8Bit().constData(), nOk ? "" : "(MISSING)",
-                    pv.toLocal8Bit().constData(), pOk ? "" : "(MISSING)");
-        }
-        fprintf(stderr, "[selftest] menu-bar ring: %d/%d resolve -> %s\n",
-                ringOk, ringTot,
-                (ringTot > 0 && ringOk == ringTot) ? "PASS"
-                    : ringTot == 0 ? "N/A (skin has no menu bar)" : "FAIL");
-
-        // (2) chrome re-tint across a colour-theme switch.
-        const QString active0 =
-            gammasets().active() ? gammasets().active()->name : QString();
-        const QString m0 = themedMenuStyle(), d0 = themedDialogStyle();
-        setActiveGammaset(themeName);
-        const QString m1 = themedMenuStyle(), d1 = themedDialogStyle();
-        // Dump the resolved wa_dlg colours under `themeName` — used to copy
-        // a native theme's exact dialog palette into a synthetic one.
-        for (const char *k : {"wasabi.window.background", "wasabi.window.text",
-                              "wasabi.list.background", "wasabi.list.text",
-                              "wasabi.list.text.selected.background",
-                              "wasabi.list.text.selected",
-                              "wasabi.button.text", "wasabi.button.dimmedText"}) {
-            const QColor c = colors().resolve(QString::fromLatin1(k),
-                                              &gammasets(), QColor());
-            fprintf(stderr, "[wadlg] %-40s = %s\n", k,
-                    c.isValid() ? c.name().toLocal8Bit().constData()
-                                : "(absent)");
-        }
-        setActiveGammaset(active0);   // restore
-        auto firstColor = [](const QString &qss) {
-            const int i = qss.indexOf(QStringLiteral("background-color:"));
-            return i < 0 ? QString() : qss.mid(i + 17, 7);
-        };
-        fprintf(stderr, "[selftest] theme '%s'->'%s'  menu bg %s->%s  dialog bg %s->%s\n",
-                active0.toLocal8Bit().constData(),
-                themeName.toLocal8Bit().constData(),
-                firstColor(m0).toLocal8Bit().constData(),
-                firstColor(m1).toLocal8Bit().constData(),
-                firstColor(d0).toLocal8Bit().constData(),
-                firstColor(d1).toLocal8Bit().constData());
-        fprintf(stderr, "[selftest] menu re-tint:   %s\n",
-                m0 != m1 ? "PASS (differs)" : "FAIL (unchanged)");
-        fprintf(stderr, "[selftest] dialog re-tint: %s\n",
-                d0 != d1 ? "PASS (differs)" : "FAIL (unchanged)");
-    }
-
-    // Build a QMenu stylesheet from the skin's palette.  Winamp resolves
-    // popup-menu colours (gen_ml/colors.cpp) from wasabi.popupmenu.* and,
-    // where a skin declares none, from the wa_dlg window/list roles —
-    // WADLG_WNDBG = wasabi.window.background, WADLG_WNDFG =
-    // wasabi.window.text, WADLG_HILITE = the list selection.  Those roles
-    // carry gammagroups, so resolving them through the ACTIVE gammaset
-    // makes the menu re-tint when the user switches colour theme.  Every
-    // key is resolved live, so a menu opened after a theme switch picks up
-    // the new colours.
-    QString themedMenuStyle() {
-        return qtWasabi::head::themedMenuStyle(gammasets(), colors());
-    }
-
-    QString menuStyleFor(const QString &sel) {
-        return qtWasabi::head::menuStyleFor(gammasets(), colors(), sel);
-    }
-
-    QString themedDialogStyle() {
-        return qtWasabi::head::themedDialogStyle(gammasets(), colors());
-    }
-
     // The visible <Menu> widget whose canvas rect contains `itemPos`, if
     // any.  Menus paint nothing themselves but cacheResolvedRects fills
     // their lastCanvasRect, so the bar's button bounds are available for
@@ -3761,7 +3382,6 @@ public:
         walk(mut);
     }
 
-    qtWasabi::PlayerHost *m_host = nullptr;
     QPoint     m_dragOrigin;
     bool       m_dragging = false;
     // Script receiver whose onLeftButtonDown claimed the press —
@@ -3780,22 +3400,12 @@ public:
     // Id of m_activeWidget, captured when it's set, so a press→rebuild→release
     // sequence can tell a live widget from a freed one without dereferencing.
     QString           m_activeWidgetId;
-    qtWasabi::SkinXml::Document m_doc;
     QHash<QString, qtWasabi::SkinView *> m_subwindows;
-    QString m_rootContainerId = QStringLiteral("main");
     bool m_drawerOpen = true;
-    // Hot-reload — XML/script edits trigger reloadSkin via a
-    // debounced QFileSystemWatcher.  m_runtime is held so reloadSkin
-    // can reset() the Maki VM cleanly; nullable to keep the class
-    // usable without a runtime (offscreen rendering tests).
-    qtWasabi::SkinRuntime *m_runtime         = nullptr;
     // Previous player transport state — lets the playbackStateChanged
     // handler tell a fresh start (onPlay) from un-pausing (onResume).
     QMediaPlayer::PlaybackState m_prevPlaybackState =
         QMediaPlayer::StoppedState;
-    QFileSystemWatcher    *m_skinWatcher     = nullptr;
-    QTimer                *m_reloadDebounce  = nullptr;
-    QString                m_hotReloadRoot;
     // MilkDrop overlay — populated by wireMilkdrop() when the skin
     // declares an AVS slot.  Recognised forms:
     //   • Explicit `<milkdrop>` widget tag (qtamp-specific opt-in).
