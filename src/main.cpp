@@ -287,6 +287,13 @@ private:
 class QtampPlayerWindow;
 class QtampHost : public PlayerHost {
 public:
+    // qtamp's host owns its file dialogs (multi-select + recent-files
+    // bookkeeping) — the head must route pick flows through them.
+    qtWasabi::HostCapabilities hostCapabilities() const override {
+        return {/*localFiles=*/true, /*localAnalyzer=*/true,
+                /*providesFilePicker=*/true};
+    }
+
     QtampHost() {
         reloadVisPrefs();
 
@@ -849,6 +856,11 @@ public:
         QList<QUrl> urls;
         for (const QString &p : paths) urls << QUrl::fromLocalFile(p);
         enqueueUrls(urls, enqueueOnly);
+        // Recent-files bookkeeping lives with the picker (was menu-side
+        // before V5d).  Multi-select records every file.
+        for (const QUrl &u : std::as_const(urls))
+            if (!u.isEmpty())
+                RecentFilesManager::instance().addFile(u.toLocalFile());
         return urls;
 #endif
     }
@@ -877,6 +889,11 @@ public:
         audiometa::sortByTrack(files);
         for (const QString &f : files) urls << QUrl::fromLocalFile(f);
         enqueueUrls(urls, enqueueOnly);
+        // A folder records its first file only (the album stands in
+        // for the batch), as the menu-side bookkeeping always did.
+        if (!urls.isEmpty())
+            RecentFilesManager::instance().addFile(
+                urls.first().toLocalFile());
         return urls;
 #endif
     }
@@ -1290,39 +1307,6 @@ void QtampHost::runEqPipeline(const QAudioBuffer &buf) {
 // Auxiliary sub-windows (EQ / Playlist / etc.) stay on the QWidget
 // SkinView path.
 
-// Event filter for the WA5 menu-bar popups: Left/Right arrow keys walk
-// the prev/next sibling chain (mirrors Wasabi's nextMenu/_previousMenu),
-// while leaving QMenu's own submenu open/close on the arrows intact —
-// Right still opens a highlighted submenu, Left still closes an open one.
-class MenuArrowFilter : public QObject {
-public:
-    QMenu *menu = nullptr;
-    std::function<void()> onPrev, onNext;
-    bool eventFilter(QObject *o, QEvent *e) override {
-        if (e->type() != QEvent::KeyPress) return false;
-        auto *ke = static_cast<QKeyEvent *>(e);
-        if (::getenv("WASABIQT_TRACE_MAKI"))
-            fprintf(stderr, "[menukey] key=0x%x on %s\n", ke->key(),
-                    o ? o->metaObject()->className() : "?");
-        if (ke->key() == Qt::Key_Right) {
-            // A highlighted submenu opens on Right — don't navigate then.
-            if (menu && menu->activeAction() && menu->activeAction()->menu())
-                return false;
-            if (onNext) onNext();
-            return true;
-        }
-        if (ke->key() == Qt::Key_Left) {
-            // An open submenu closes on Left — don't navigate then.
-            if (menu)
-                for (QMenu *sub : menu->findChildren<QMenu *>())
-                    if (sub->isVisible()) return false;
-            if (onPrev) onPrev();
-            return true;
-        }
-        return false;
-    }
-};
-
 class QtampPlayerWindow : public qtWasabi::head::HeadWindow {
 public:
     // A fresh skin document was adopted (initial load or reload):
@@ -1447,13 +1431,6 @@ protected:
         return false;
     }
 
-    // Menu-bar popups carry qtamp's WA5:* menu content.
-    const qtWasabi::Widget *openMenuBarMenu(const QString &menuId,
-                                            QPoint anchor,
-                                            const qtWasabi::Widget *source)
-        override {
-        return showWa5Menu(menuId, anchor, source);
-    }
 
 
 public:
@@ -1463,268 +1440,135 @@ public:
     // path off the PreferencesDialog's `skinChanged(path)` signal.
     // Also used by the hot-reload watcher when a skin XML file changes
     // on disk.
-private:
-    // Winamp-style right-click context menu.  Items that map onto
-    // qtamp's host surface (Play file, Recent files, Bookmarks,
-    // Preferences, Jump to time, About, Exit, Colour Theme) are fully
-    // wired.  Items that don't yet have a backend in qtamp (equalizer
-    // window, playlist window, video, media library, milkdrop) are
-    // left as enabled placeholders that surface a status and wire up
-    // as those subsystems land.  Same submenus, labels, hotkey hints,
-    // and green-on-navy stylesheet as the classic Winamp menu, plus
-    // the PreferencesDialog and AboutDialog.
-    // Q_INVOKABLE so the SYSMENU action (via Host::showSystemMenu)
-    // can pop this same menu from a non-mouse path via
-    // QMetaObject::invokeMethod("showContextMenu", Q_ARG(QPoint, ...)).
 public:
-    Q_INVOKABLE void showContextMenu(QPoint globalPos) {
-        const QString menuStyle = themedMenuStyle();
-
-        QMenu menu;
-        menu.setStyleSheet(menuStyle);
-
-        // === Winamp-style main menu (mirrors the classic top menu) ===
-
-        // -- Play submenu --
-        QMenu *playMenu = menu.addMenu("Play");
-        playMenu->setStyleSheet(menuStyle);
-        QAction *playFileAct = playMenu->addAction("Play file(s)...\tL");
-        QAction *playFolderAct = playMenu->addAction("Play folder...\tShift+L");
-        QAction *playLocAct  = playMenu->addAction("Play location...\tCtrl+L");
-        playMenu->addSeparator();
-
-        // -- Recent files submenu --
-        QMenu *recentMenu = playMenu->addMenu("Recent files");
-        recentMenu->setStyleSheet(menuStyle);
-        auto &recent = RecentFilesManager::instance();
-        QHash<QAction *, QString> recentOf;
-        if (recent.recentFiles.isEmpty()) {
-            QAction *empty = recentMenu->addAction("(no recent files)");
-            empty->setEnabled(false);
-        } else {
-            for (int i = 0; i < recent.recentFiles.size(); i++) {
-                const QString f = recent.recentFiles[i];
-                QAction *a = recentMenu->addAction(
-                    QString("%1. %2").arg(i + 1).arg(QFileInfo(f).fileName()));
-                recentOf.insert(a, f);
+    // ── HeadMenu extension points ─────────────────────────────────────
+    // qtamp's menu contributions: Recent files (in Play), Bookmarks
+    // (top level), and the disabled MilkDrop placeholders.  State is
+    // snapshotted at contribute time — menus rebuild on every popup.
+    void contributeMenu(const QString &menuId, const QString &anchor,
+                        qtWasabi::head::MenuBuilder &b) override {
+        Q_UNUSED(menuId);
+        using qtWasabi::head::MenuItem;
+        if (anchor == QLatin1String("context.play.end")) {
+            MenuItem recent;
+            recent.label = QStringLiteral("Recent files");
+            auto &mgr = RecentFilesManager::instance();
+            if (mgr.recentFiles.isEmpty()) {
+                MenuItem none;
+                none.label = QStringLiteral("(no recent files)");
+                none.enabled = false;
+                recent.children.append(none);
+            } else {
+                for (int i = 0; i < mgr.recentFiles.size(); i++) {
+                    const QString f = mgr.recentFiles[i];
+                    MenuItem it;
+                    it.id = QStringLiteral("qtamp:recent:") + f;
+                    it.label = QString("%1. %2")
+                                   .arg(i + 1)
+                                   .arg(QFileInfo(f).fileName());
+                    recent.children.append(it);
+                }
             }
-        }
-
-        // -- Bookmarks submenu --
-        QMenu *bmMenu = menu.addMenu("Bookmarks");
-        bmMenu->setStyleSheet(menuStyle);
-        QAction *addBmAct = bmMenu->addAction("Add current as bookmark");
-        const QUrl currentSrc = m_host->currentSourceUrl();
-        const QString currentFile = currentSrc.isLocalFile()
-            ? currentSrc.toLocalFile() : QString();
-        addBmAct->setEnabled(!currentFile.isEmpty());
-        bmMenu->addSeparator();
-        auto &bmMgr = BookmarkManager::instance();
-        QHash<QAction *, int> bmOf;
-        for (int i = 0; i < bmMgr.bookmarks.size(); i++) {
-            QAction *a = bmMenu->addAction(bmMgr.bookmarks[i].title);
-            bmOf.insert(a, i);
-        }
-        if (bmMgr.bookmarks.isEmpty()) {
-            QAction *empty = bmMenu->addAction("(no bookmarks)");
-            empty->setEnabled(false);
-        }
-
-        menu.addSeparator();
-
-        // -- Options submenu --
-        QMenu *optMenu = menu.addMenu("Options");
-        optMenu->setStyleSheet(menuStyle);
-        QAction *aotAct = optMenu->addAction("Always on top\tCtrl+T");
-        aotAct->setCheckable(true);
-        aotAct->setChecked(window() &&
-            (window()->flags() & Qt::WindowStaysOnTopHint));
-
-        QAction *dsizeAct = optMenu->addAction("Double size\tCtrl+D");
-        dsizeAct->setCheckable(true);
-        dsizeAct->setEnabled(false);
-
-        QAction *shadeAct = optMenu->addAction("Windowshade mode\tCtrl+W");
-        shadeAct->setCheckable(true);
-        shadeAct->setEnabled(false);
-
-        optMenu->addSeparator();
-        QAction *prefsAct = optMenu->addAction("Preferences...\tCtrl+P");
-
-        optMenu->addSeparator();
-        QAction *stopAfterAct = optMenu->addAction("Stop after current");
-        stopAfterAct->setCheckable(true);
-        stopAfterAct->setEnabled(false);
-
-        // -- Playback submenu --
-        QMenu *pbMenu = menu.addMenu("Playback");
-        pbMenu->setStyleSheet(menuStyle);
-        QAction *jumpTimeAct = pbMenu->addAction("Jump to time...\tJ");
-        QAction *jumpFileAct = pbMenu->addAction("Jump to file...\tCtrl+J");
-        jumpFileAct->setEnabled(false);
-        pbMenu->addSeparator();
-
-        QAction *shuffAct = pbMenu->addAction("Shuffle");
-        shuffAct->setCheckable(true);
-        shuffAct->setEnabled(false);
-
-        QMenu *repMenu = pbMenu->addMenu("Repeat");
-        repMenu->setStyleSheet(menuStyle);
-        QAction *repOffAct = repMenu->addAction("Off");
-        repOffAct->setCheckable(true);
-        repOffAct->setChecked(true);
-        QAction *repAllAct = repMenu->addAction("Repeat all");
-        repAllAct->setCheckable(true);
-        repAllAct->setEnabled(false);
-        QAction *repOneAct = repMenu->addAction("Repeat track");
-        repOneAct->setCheckable(true);
-        repOneAct->setEnabled(false);
-
-        // -- Windows submenu --
-        QMenu *winMenu = menu.addMenu("Windows");
-        winMenu->setStyleSheet(menuStyle);
-        QAction *eqTogAct = winMenu->addAction("Equalizer\tAlt+G");
-        eqTogAct->setCheckable(true);
-        eqTogAct->setEnabled(false);
-        QAction *plTogAct = winMenu->addAction("Playlist editor\tAlt+E");
-        plTogAct->setCheckable(true);
-        plTogAct->setEnabled(false);
-        QAction *vidTogAct = winMenu->addAction("Video window");
-        vidTogAct->setCheckable(true);
-        vidTogAct->setEnabled(false);
-        QAction *mlTogAct = winMenu->addAction("Media library\tAlt+L");
-        mlTogAct->setCheckable(true);
-        mlTogAct->setEnabled(false);
-        winMenu->addSeparator();
-        QAction *milkdropAct = winMenu->addAction("Milkdrop visualization");
-        milkdropAct->setEnabled(false);
-
-        // -- Visualization submenu --
-        QMenu *visMenu = menu.addMenu("Visualization");
-        visMenu->setStyleSheet(menuStyle);
-        QAction *visOffAct = visMenu->addAction("Off");
-        visOffAct->setCheckable(true);
-        visOffAct->setChecked(m_visMode == 0);
-        QAction *visSpecAct = visMenu->addAction("Spectrum analyzer");
-        visSpecAct->setCheckable(true);
-        visSpecAct->setChecked(m_visMode == 1);
-        QAction *visOscAct = visMenu->addAction("Oscilloscope");
-        visOscAct->setCheckable(true);
-        visOscAct->setChecked(m_visMode == 2);
-        QAction *visVuAct = visMenu->addAction("VU meter");
-        visVuAct->setCheckable(true);
-        visVuAct->setChecked(m_visMode == 3);
-        visMenu->addSeparator();
-        QAction *visMilkdropAct = visMenu->addAction("Milkdrop visualization...");
-        visMilkdropAct->setEnabled(false);
-
-        // -- Time display submenu --
-        // Elapsed vs remaining (countdown), the two modes real Winamp
-        // offers.  Same per-skin slot the skin's own time-click toggle
-        // and the Preferences radios use, so all three stay one state.
-        QMenu *timeMenu = menu.addMenu("Time display");
-        timeMenu->setStyleSheet(menuStyle);
-        const int timeMode = timeDisplayMode();
-        QAction *timeElapsedAct = timeMenu->addAction("Time elapsed");
-        timeElapsedAct->setCheckable(true);
-        timeElapsedAct->setChecked(timeMode != 2);
-        QAction *timeRemainAct = timeMenu->addAction("Time remaining");
-        timeRemainAct->setCheckable(true);
-        timeRemainAct->setChecked(timeMode == 2);
-
-        menu.addSeparator();
-
-        QAction *aboutAct = menu.addAction("About Winamp...");
-        menu.addSeparator();
-        QAction *quitAct = menu.addAction("Exit");
-
-        // === Handle selection ===
-        prepareMenuForWayland(menu);
-        QAction *sel = menu.exec(globalPos);
-        if (!sel) return;
-
-        if (sel == playFileAct) {
-            // QQuickItem isn't a QWidget; pass nullptr so the file
-            // dialog parents to QGuiApplication.  Multi-select.
-            const QList<QUrl> us = m_host->openFilesAndEnqueue(nullptr);
-            for (const QUrl &u : us)
-                if (!u.isEmpty())
-                    RecentFilesManager::instance().addFile(u.toLocalFile());
-        }
-        else if (sel == playFolderAct) {
-            const QList<QUrl> us = m_host->openFolderAndEnqueue(nullptr);
-            if (!us.isEmpty())
-                RecentFilesManager::instance().addFile(us.first().toLocalFile());
-        }
-        else if (sel == playLocAct) {
-            PlayLocationDialog dlg(nullptr);
-            if (dlg.exec() == QDialog::Accepted) {
-                QString url = dlg.getUrl();
-                if (!url.isEmpty())
-                    m_host->enqueueAndPlay(QUrl(url));
+            b.addItem(recent);
+        } else if (anchor == QLatin1String("context.afterPlay")) {
+            MenuItem bm;
+            bm.label = QStringLiteral("Bookmarks");
+            MenuItem add;
+            const QUrl currentSrc = m_host->currentSourceUrl();
+            const QString currentFile = currentSrc.isLocalFile()
+                ? currentSrc.toLocalFile() : QString();
+            // Carry the menu-open file IN the id so dispatch bookmarks
+            // exactly what was showing when the menu opened — the
+            // source can change under a remote-head push while the
+            // popup's event loop spins.
+            add.id = QStringLiteral("qtamp:bookmark:add:") + currentFile;
+            add.label = QStringLiteral("Add current as bookmark");
+            add.enabled = !currentFile.isEmpty();
+            bm.children.append(add);
+            MenuItem sep;   // separator sentinel: empty id + label "---"
+            sep.id = QStringLiteral("-");
+            bm.children.append(sep);
+            auto &bmMgr = BookmarkManager::instance();
+            for (int i = 0; i < bmMgr.bookmarks.size(); i++) {
+                MenuItem it;
+                it.id = QStringLiteral("qtamp:bookmark:%1").arg(i);
+                it.label = bmMgr.bookmarks[i].title;
+                bm.children.append(it);
             }
+            if (bmMgr.bookmarks.isEmpty()) {
+                MenuItem none;
+                none.label = QStringLiteral("(no bookmarks)");
+                none.enabled = false;
+                bm.children.append(none);
+            }
+            b.addItem(bm);
+        } else if (anchor == QLatin1String("context.windows.end")) {
+            MenuItem md;
+            md.label = QStringLiteral("Milkdrop visualization");
+            md.enabled = false;
+            b.addItem(md);
+        } else if (anchor == QLatin1String("context.visualization.end")) {
+            MenuItem md;
+            md.label = QStringLiteral("Milkdrop visualization...");
+            md.enabled = false;
+            b.addItem(md);
         }
-        else if (recentOf.contains(sel)) {
-            const QString f = recentOf.value(sel);
-            m_host->enqueueAndPlay(QUrl::fromLocalFile(f));
+    }
+
+    bool handleMenuAction(const QString &actionId) override {
+        if (actionId.startsWith(QLatin1String("qtamp:recent:"))) {
+            m_host->enqueueAndPlay(QUrl::fromLocalFile(
+                actionId.mid(int(qstrlen("qtamp:recent:")))));
+            return true;
         }
-        else if (sel == addBmAct) {
+        if (actionId.startsWith(QLatin1String("qtamp:bookmark:add:"))) {
+            const QString currentFile =
+                actionId.mid(int(qstrlen("qtamp:bookmark:add:")));
+            if (currentFile.isEmpty()) return true;
             bool ok;
             const QString title = QInputDialog::getText(nullptr,
                 tr("Add Bookmark"), tr("Bookmark title:"),
                 QLineEdit::Normal, QFileInfo(currentFile).fileName(), &ok);
             if (ok && !title.isEmpty())
                 BookmarkManager::instance().addBookmark(title, currentFile);
+            return true;
         }
-        else if (bmOf.contains(sel)) {
-            const auto &bm = bmMgr.bookmarks[bmOf.value(sel)];
-            m_host->enqueueAndPlay(QUrl::fromLocalFile(bm.path));
+        if (actionId.startsWith(QLatin1String("qtamp:bookmark:"))) {
+            const int i =
+                actionId.mid(int(qstrlen("qtamp:bookmark:"))).toInt();
+            auto &bmMgr = BookmarkManager::instance();
+            if (i >= 0 && i < bmMgr.bookmarks.size())
+                m_host->enqueueAndPlay(
+                    QUrl::fromLocalFile(bmMgr.bookmarks[i].path));
+            return true;
         }
-        else if (sel == aotAct) {
-            if (auto *w = window()) {
-                Qt::WindowFlags f = w->flags();
-                if (sel->isChecked()) f |=  Qt::WindowStaysOnTopHint;
-                else                  f &= ~Qt::WindowStaysOnTopHint;
-                w->setFlags(f);
-                w->show();
-            }
+        if (actionId == QLatin1String("wa5:play.location")) {
+            // qtamp keeps its themed PlayLocationDialog (the framework
+            // fallback is a plain QInputDialog).
+            PlayLocationDialog dlg(nullptr);
+            if (dlg.exec() == QDialog::Accepted && !dlg.getUrl().isEmpty())
+                m_host->enqueueAndPlay(QUrl(dlg.getUrl()));
+            return true;
         }
-        else if (sel == prefsAct) {
-            openPreferences();
-        }
-        else if (sel == jumpTimeAct) {
-            bool ok;
-            QString timeStr = QInputDialog::getText(nullptr,
-                "Jump to Time",
-                "Enter time (MM:SS or seconds):",
-                QLineEdit::Normal, "", &ok);
-            if (ok && !timeStr.isEmpty()) {
-                qint64 jumpMs = 0;
-                if (timeStr.contains(':')) {
-                    QStringList parts = timeStr.split(':');
-                    if (parts.size() >= 2)
-                        jumpMs = (parts[0].toInt() * 60 + parts[1].toInt()) * 1000;
-                } else {
-                    jumpMs = timeStr.toInt() * 1000;
-                }
-                m_host->seekMs(qBound(qint64(0), jumpMs, m_host->durationMs()));
-            }
-        }
-        else if (sel == aboutAct) {
-            // The animated demoscene-style AboutDialog.
+        if (actionId == QLatin1String("wa5:help.about")) {
+            // The animated demoscene-style AboutDialog.  The skinPath
+            // quirk (derived from the MEDIA file's directory) is
+            // preserved from the context-menu original; the WA5 About
+            // now shares it (was empty — conscious delta).
             QString skinPath;
             const QUrl src = m_host->currentSourceUrl();
-            if (src.isLocalFile()) skinPath = QFileInfo(src.toLocalFile()).absolutePath();
+            if (src.isLocalFile())
+                skinPath = QFileInfo(src.toLocalFile()).absolutePath();
             AboutDialog about(skinPath, nullptr);
             about.exec();
+            return true;
         }
-        else if (sel == visOffAct)  setVisMode(0);
-        else if (sel == visSpecAct) setVisMode(1);
-        else if (sel == visOscAct)  setVisMode(2);
-        else if (sel == visVuAct)   setVisMode(3);
-        else if (sel == timeElapsedAct) setTimeDisplayMode(1);
-        else if (sel == timeRemainAct)  setTimeDisplayMode(2);
-        else if (sel == quitAct) { if (window()) window()->close(); }
+        return false;
+    }
+
+    bool showPreferences() override {
+        openPreferences();
+        return true;
     }
 
     // Open the Preferences dialog (shared by the context menu and the
@@ -1814,28 +1658,6 @@ public:
     // so an already-open dialog or popup follows the new theme live, not
     // just the next one opened.  The skin re-tints itself through the base
     // class; we add the chrome on top.
-    // The visible <Menu> widget whose canvas rect contains `itemPos`, if
-    // any.  Menus paint nothing themselves but cacheResolvedRects fills
-    // their lastCanvasRect, so the bar's button bounds are available for
-    // the hover-switch hit-test.
-    const qtWasabi::Widget *menuWidgetAt(QPoint itemPos) const {
-        const qtWasabi::Widget *found = nullptr;
-        std::function<void(const qtWasabi::Widget &)> walk =
-            [&](const qtWasabi::Widget &w) {
-            if (found) return;
-            if (w.tag == QLatin1String("menu") &&
-                w.attrs.value(QStringLiteral("visible")) !=
-                    QStringLiteral("0") &&
-                w.lastCanvasRect.contains(itemPos)) {
-                found = &w;
-                return;
-            }
-            for (const auto &c : w.children) if (c) walk(*c);
-        };
-        walk(tree());
-        return found;
-    }
-
     // Spawn the popup for a skin menu-bar button (`<Menu menu="WA5:File">`).
     // The WA5:* ids are Winamp's standard top-bar menus; we build a focused
     // popup per id, wired to the same Host/window actions the right-click
@@ -1844,141 +1666,6 @@ public:
     // that widget so the caller can chain to it (the menu-bar sweep, per
     // the Wasabi switchToMenu timer model).  Returns the next menu widget
     // to open, or nullptr when the popup closed normally.
-    const qtWasabi::Widget *showWa5Menu(const QString &menuId,
-                                        QPoint globalPos,
-                                        const qtWasabi::Widget *source) {
-        const QString menuStyle = themedMenuStyle();
-        QMenu menu;
-        menu.setStyleSheet(menuStyle);
-        // Match on the trailing menu name so "WA5:File" and a bare "File"
-        // resolve the same.
-        const QString m = menuId.section(QChar(':'), -1).toLower();
-        if (::getenv("WASABIQT_TRACE_MAKI"))
-            fprintf(stderr, "[wa5menu] spawn '%s' (-> '%s') at (%d,%d)\n",
-                    menuId.toLocal8Bit().constData(),
-                    m.toLocal8Bit().constData(), globalPos.x(), globalPos.y());
-
-        QHash<QAction *, std::function<void()>> act;
-        if (m == QLatin1String("file")) {
-            act[menu.addAction("Play file...")] = [this]{
-                const QUrl u = m_host->pickFile(nullptr);
-                if (!u.isEmpty())
-                    RecentFilesManager::instance().addFile(u.toLocalFile());
-            };
-            act[menu.addAction("Play location...")] = [this]{
-                PlayLocationDialog dlg(nullptr);
-                if (dlg.exec() == QDialog::Accepted && !dlg.getUrl().isEmpty())
-                    m_host->enqueueAndPlay(QUrl(dlg.getUrl()));
-            };
-            menu.addSeparator();
-            act[menu.addAction("Exit")] =
-                [this]{ if (window()) window()->close(); };
-        } else if (m == QLatin1String("play")) {
-            const bool playing = m_host->isPlaying();
-            act[menu.addAction(playing ? "Pause" : "Play")] =
-                [this, playing]{ if (playing) m_host->pause();
-                                 else m_host->play(); };
-            act[menu.addAction("Stop")] = [this]{ m_host->stop(); };
-            menu.addSeparator();
-            act[menu.addAction("Previous")] = [this]{ m_host->prev(); };
-            act[menu.addAction("Next")]     = [this]{ m_host->next(); };
-        } else if (m == QLatin1String("options")) {
-            act[menu.addAction("Preferences...")] = [this]{ openPreferences(); };
-            menu.addSeparator();
-            // Real Winamp's Options menu carries the two time-display
-            // modes; same per-skin slot as the context-menu submenu.
-            const int tm = timeDisplayMode();
-            QAction *te = menu.addAction("Time elapsed");
-            te->setCheckable(true);
-            te->setChecked(tm != 2);
-            act[te] = [this]{ setTimeDisplayMode(1); };
-            QAction *tr = menu.addAction("Time remaining");
-            tr->setCheckable(true);
-            tr->setChecked(tm == 2);
-            act[tr] = [this]{ setTimeDisplayMode(2); };
-        } else if (m == QLatin1String("view") ||
-                   m == QLatin1String("windows")) {
-            act[menu.addAction("Playlist editor")] =
-                [this]{ toggleSubwindow(QStringLiteral("pl")); };
-            act[menu.addAction("Media library")] =
-                [this]{ toggleSubwindow(QStringLiteral("ml")); };
-            act[menu.addAction("Video")] =
-                [this]{ toggleSubwindow(QStringLiteral("vid")); };
-            menu.addSeparator();
-            QMenu *visM = menu.addMenu("Visualization");
-            visM->setStyleSheet(menuStyle);
-            const char *vl[] = { "Off", "Spectrum analyzer",
-                                 "Oscilloscope", "VU meter" };
-            for (int i = 0; i < 4; ++i) {
-                QAction *a = visM->addAction(vl[i]);
-                a->setCheckable(true);
-                a->setChecked(m_visMode == i);
-                act[a] = [this, i]{ setVisMode(i); };
-            }
-        } else if (m == QLatin1String("help")) {
-            act[menu.addAction("About...")] =
-                [this]{ AboutDialog about(QString(), nullptr); about.exec(); };
-        } else {
-            showContextMenu(globalPos);
-            return nullptr;
-        }
-
-        // menugroup hover-switch: while this popup is open, poll the cursor
-        // and chain to a sibling menu button it enters.  Record where the
-        // cursor was at spawn and only switch once it has actually MOVED
-        // (Wasabi's xuimenu timerCheck does the same) — otherwise a
-        // stationary cursor still hovering the just-clicked / arrow-key'd
-        // button would immediately yank the popup back to it.
-        const qtWasabi::Widget *chainTo = nullptr;
-        const QString grp = source
-            ? source->attrs.value(QStringLiteral("menugroup")) : QString();
-        const QPoint origCursor = QCursor::pos();
-        QTimer poll;
-        poll.setInterval(60);
-        connect(&poll, &QTimer::timeout, &menu, [&]{
-            if (!source || grp.isEmpty()) return;
-            const QPoint gc = QCursor::pos();
-            if (gc == origCursor) return;   // cursor hasn't moved yet
-            const QPoint ip = mapFromGlobal(gc).toPoint();
-            const qtWasabi::Widget *sib = menuWidgetAt(ip);
-            if (sib && sib != source &&
-                sib->attrs.value(QStringLiteral("menugroup"))
-                    .compare(grp, Qt::CaseInsensitive) == 0) {
-                chainTo = sib;
-                menu.close();
-            }
-        });
-        // Left/Right arrow keys walk the prev/next menu chain.
-        MenuArrowFilter navFilter;
-        navFilter.menu = &menu;
-        auto chainByAttr = [&](const QString &attr) {
-            if (!source) return;
-            const QString id = source->attrs.value(attr);
-            if (id.isEmpty()) return;
-            qtWasabi::Widget *nw = qtWasabi::Widget::findById(id);
-            if (nw && nw->tag == QLatin1String("menu")) {
-                chainTo = nw;
-                menu.close();
-            }
-        };
-        navFilter.onPrev = [&]{ chainByAttr(QStringLiteral("prev")); };
-        navFilter.onNext = [&]{ chainByAttr(QStringLiteral("next")); };
-        // App-level filter (not menu-level): on Wayland the xdg-popup may
-        // not hold keyboard focus, so a filter on the menu can miss the
-        // arrows.  qApp sees the key wherever Qt delivers it.  MUST be
-        // removed before navFilter (a local) is destroyed.
-        if (source) qApp->installEventFilter(&navFilter);
-
-        if (source) poll.start();
-        prepareMenuForWayland(menu);
-        QAction *sel = menu.exec(globalPos);
-        poll.stop();
-        if (source) qApp->removeEventFilter(&navFilter);
-        if (chainTo) return chainTo;          // chain; don't run the action
-        if (sel && act.contains(sel)) act.value(sel)();
-        return nullptr;
-    }
-
     // Walk the freshly-loaded skin tree for the first <milkdrop>
     // placeholder.  When found AND the build has QTAMP_WITH_MILKDROP,
     // construct a MilkdropItem as a sibling overlay of this
@@ -2289,9 +1976,7 @@ private:
         }
         return nullptr;
     }
-public:
 
-public:
     // Programmatic equivalent of clicking a drawer tab.
     // MilkDrop overlay — populated by wireMilkdrop() when the skin
     // declares an AVS slot.  Recognised forms:
@@ -2316,8 +2001,10 @@ public:
 inline QUrl QtampHost::pickFile(QWidget *embedder) {
     // The "open content" prompt (PLAY on empty / EJECT) is multi-select:
     // pick one file, many files, or a whole folder's worth via Ctrl+A — not
-    // just a single track.  Returns the first chosen URL for the caller's
-    // recent-files bookkeeping.
+    // just a single track.  Recent-files bookkeeping happens inside
+    // openFilesAndEnqueue (moved there in V5d); the returned first URL is
+    // only a "did the user pick anything" signal — callers must NOT record
+    // it again.
     const QList<QUrl> us = openFilesAndEnqueue(embedder);
     return us.isEmpty() ? QUrl() : us.first();
 }
@@ -3067,6 +2754,13 @@ int main(int argc, char *argv[]) {
     // verifies the menu-bar prev/next ring and the menu/dialog re-tint,
     // then quits.  Runs without --screenshot (the chrome is Qt widgets,
     // not part of the offscreen skin grab).
+    if (::getenv("WASABIQT_DUMP_MENU")) {
+      QTimer::singleShot(400, view, [view]() {
+        view->dumpMenusForGate();
+        QCoreApplication::quit();
+      });
+    }
+
     if (const char *st = ::getenv("WASABIQT_SELFTEST_CHROME")) {
       const QString theme = QString::fromLocal8Bit(st);
       QTimer::singleShot(400, view, [view, theme]() {

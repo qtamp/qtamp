@@ -1,0 +1,148 @@
+[menu-dump] begin context
+[menu-dump]   "Play" submenu
+[menu-dump]     "Play file(s)...	L"
+[menu-dump]     "Play folder...	Shift+L"
+[menu-dump]     "Play location...	Ctrl+L"
+[menu-dump]     ---
+[menu-dump]     "Recent files" submenu
+[menu-dump]       "(no recent files)" disabled
+[menu-dump]   "Bookmarks" submenu
+[menu-dump]     "Add current as bookmark" disabled
+[menu-dump]     ---
+[menu-dump]     "(no bookmarks)" disabled
+[menu-dump]   ---
+[menu-dump]   "Options" submenu
+[menu-dump]     "Always on top	Ctrl+T" checkable
+[menu-dump]     "Double size	Ctrl+D" disabled checkable
+[menu-dump]     "Windowshade mode	Ctrl+W" disabled checkable
+[menu-dump]     ---
+[menu-dump]     "Preferences...	Ctrl+P"
+[menu-dump]     ---
+[menu-dump]     "Stop after current" disabled checkable
+[menu-dump]   "Playback" submenu
+[menu-dump]     "Jump to time...	J"
+[menu-dump]     "Jump to file...	Ctrl+J" disabled
+[menu-dump]     ---
+[menu-dump]     "Shuffle" disabled checkable
+[menu-dump]     "Repeat" submenu
+[menu-dump]       "Off" checked
+[menu-dump]       "Repeat all" disabled checkable
+[menu-dump]       "Repeat track" disabled checkable
+[menu-dump]   "Windows" submenu
+[menu-dump]     "Equalizer	Alt+G" disabled checkable
+[menu-dump]     "Playlist editor	Alt+E" disabled checkable
+[menu-dump]     "Video window" disabled checkable
+[menu-dump]     "Media library	Alt+L" disabled checkable
+[menu-dump]     ---
+[menu-dump]     "Milkdrop visualization" disabled
+[menu-dump]   "Visualization" submenu
+[menu-dump]     "Off" checkable
+[menu-dump]     "Spectrum analyzer" checked
+[menu-dump]     "Oscilloscope" checkable
+[menu-dump]     "VU meter" checkable
+[menu-dump]     ---
+[menu-dump]     "Milkdrop visualization..." disabled
+[menu-dump]   "Time display" submenu
+[menu-dump]     "Time elapsed" checked
+[menu-dump]     "Time remaining" checkable
+[menu-dump]   ---
+[menu-dump]   "About Winamp..."
+[menu-dump]   ---
+[menu-dump]   "Exit"
+[menu-dump] end context
+[menu-dump] begin wa5:file
+[menu-dump]   "Play file..."
+[menu-dump]   "Play location..."
+[menu-dump]   ---
+[menu-dump]   "Exit"
+[menu-dump] end wa5:file
+[menu-dump] begin wa5:play
+[menu-dump]   "Play"
+[menu-dump]   "Stop"
+[menu-dump]   ---
+[menu-dump]   "Previous"
+[menu-dump]   "Next"
+[menu-dump] end wa5:play
+[menu-dump] begin wa5:options
+[menu-dump]   "Preferences..."
+[menu-dump]   ---
+[menu-dump]   "Time elapsed" checked
+[menu-dump]   "Time remaining" checkable
+[menu-dump] end wa5:options
+[menu-dump] begin wa5:windows
+[menu-dump]   "Playlist editor"
+[menu-dump]   "Media library"
+[menu-dump]   "Video"
+[menu-dump]   ---
+[menu-dump]   "Visualization" submenu
+[menu-dump]     "Off" checkable
+[menu-dump]     "Spectrum analyzer" checked
+[menu-dump]     "Oscilloscope" checkable
+[menu-dump]     "VU meter" checkable
+[menu-dump] end wa5:windows
+[menu-dump] begin wa5:view
+[menu-dump]   "Playlist editor"
+[menu-dump]   "Media library"
+[menu-dump]   "Video"
+[menu-dump]   ---
+[menu-dump]   "Visualization" submenu
+[menu-dump]     "Off" checkable
+[menu-dump]     "Spectrum analyzer" checked
+[menu-dump]     "Oscilloscope" checkable
+[menu-dump]     "VU meter" checkable
+[menu-dump] end wa5:view
+[menu-dump] begin wa5:help
+[menu-dump]   "About..."
+[menu-dump] end wa5:help
+[menu-dump] begin context
+[menu-dump]   "Play" submenu
+[menu-dump]     "Play file(s)...	L"
+[menu-dump]     "Play folder...	Shift+L"
+[menu-dump]     "Play location...	Ctrl+L"
+[menu-dump]     ---
+[menu-dump]     "Recent files" submenu
+[menu-dump]       "(no recent files)" disabled
+[menu-dump]   "Bookmarks" submenu
+[menu-dump]     "Add current as bookmark" disabled
+[menu-dump]     ---
+[menu-dump]     "(no bookmarks)" disabled
+[menu-dump]   ---
+[menu-dump]   "Options" submenu
+[menu-dump]     "Always on top	Ctrl+T" checkable
+[menu-dump]     "Double size	Ctrl+D" disabled checkable
+[menu-dump]     "Windowshade mode	Ctrl+W" disabled checkable
+[menu-dump]     ---
+[menu-dump]     "Preferences...	Ctrl+P"
+[menu-dump]     ---
+[menu-dump]     "Stop after current" disabled checkable
+[menu-dump]   "Playback" submenu
+[menu-dump]     "Jump to time...	J"
+[menu-dump]     "Jump to file...	Ctrl+J" disabled
+[menu-dump]     ---
+[menu-dump]     "Shuffle" disabled checkable
+[menu-dump]     "Repeat" submenu
+[menu-dump]       "Off" checked
+[menu-dump]       "Repeat all" disabled checkable
+[menu-dump]       "Repeat track" disabled checkable
+[menu-dump]   "Windows" submenu
+[menu-dump]     "Equalizer	Alt+G" disabled checkable
+[menu-dump]     "Playlist editor	Alt+E" disabled checkable
+[menu-dump]     "Video window" disabled checkable
+[menu-dump]     "Media library	Alt+L" disabled checkable
+[menu-dump]     ---
+[menu-dump]     "Milkdrop visualization" disabled
+[menu-dump]   "Visualization" submenu
+[menu-dump]     "Off" checkable
+[menu-dump]     "Spectrum analyzer" checked
+[menu-dump]     "Oscilloscope" checkable
+[menu-dump]     "VU meter" checkable
+[menu-dump]     ---
+[menu-dump]     "Milkdrop visualization..." disabled
+[menu-dump]   "Time display" submenu
+[menu-dump]     "Time elapsed" checked
+[menu-dump]     "Time remaining" checkable
+[menu-dump]   ---
+[menu-dump]   "About Winamp..."
+[menu-dump]   ---
+[menu-dump]   "Exit"
+[menu-dump] end context

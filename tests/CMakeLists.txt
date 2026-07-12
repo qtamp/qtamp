@@ -17,6 +17,13 @@ add_test(NAME graphql_sync
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/remote/graphql_sync_test.sh
             $<TARGET_FILE_DIR:qtamp>)
 
+# Menu-tree + dispatch gate (V5d): dumps the context/WA5 menus
+# headlessly and byte-compares against committed goldens; a pick-by-id
+# leg proves the dispatch chain.
+add_test(NAME menu_dump
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/regression/menu_dump_test.sh
+            $<TARGET_FILE_DIR:qtamp>)
+
 add_custom_target(qtamp_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     DEPENDS wavreader_test qtamp)
