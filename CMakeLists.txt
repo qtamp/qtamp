@@ -105,6 +105,7 @@ endif()
 set(QTAMP_SOURCES
     src/main.cpp
     src/playerhost.h
+    src/fakehost.h
     src/remotestate.cpp
     src/ssereader.cpp
     src/backendserver.cpp

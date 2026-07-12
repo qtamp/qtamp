@@ -41,6 +41,7 @@
 #include "remotehost.h"
 #include "remotetransport.h"
 #include "graphqltransport.h"
+#include "fakehost.h"
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -912,6 +913,59 @@ public:
         if (!m_playlist) return false;
         m_playlist->pleditButtonMenu(verb);   // pops Add/Rem/Sel/Misc/Manage
         return true;
+    }
+
+    // ── ML panel player-state sections (moved out of the engine's
+    // MediaLibraryPanel in Wasabi 2 V2 — the identical file code, now
+    // behind the Host seam; the engine no longer touches app data). ──
+    QList<qtWasabi::Host::MlPanelItem> mlPanelChildren(
+        const QString &ns) const override {
+        QList<qtWasabi::Host::MlPanelItem> out;
+        const QString appData = QStandardPaths::writableLocation(
+            QStandardPaths::AppDataLocation);
+        if (ns == QLatin1String("playlists")) {
+            QDir d(appData + QStringLiteral("/playlists"));
+            if (!d.exists()) return out;
+            const QStringList filters{
+                QStringLiteral("*.m3u"), QStringLiteral("*.m3u8"),
+                QStringLiteral("*.pls"), QStringLiteral("*.xspf")};
+            for (const QFileInfo &fi :
+                 d.entryInfoList(filters, QDir::Files, QDir::Name))
+                out.append({fi.completeBaseName(), fi.fileName()});
+        } else if (ns == QLatin1String("bookmarks")) {
+            QFile f(appData + QStringLiteral("/bookmarks.txt"));
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return out;
+            QTextStream ts(&f);
+            while (!ts.atEnd()) {
+                const QString line = ts.readLine().trimmed();
+                if (line.isEmpty() || line.startsWith(QChar('#'))) continue;
+                out.append({line, line});
+            }
+        } else if (ns == QLatin1String("history")) {
+            QFile f(appData + QStringLiteral("/history.txt"));
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return out;
+            QStringList lines;
+            QTextStream ts(&f);
+            while (!ts.atEnd()) {
+                const QString line = ts.readLine().trimmed();
+                if (!line.isEmpty() && !line.startsWith(QChar('#')))
+                    lines.prepend(line);  // newest first
+                if (lines.size() >= 50) break;
+            }
+            for (const QString &line : lines) {
+                const QString label = QFileInfo(line).fileName();
+                out.append({label.isEmpty() ? line : label, line});
+            }
+        } else if (ns == QLatin1String("devices")) {
+            const QString user = qEnvironmentVariable("USER");
+            if (user.isEmpty()) return out;
+            QDir d(QStringLiteral("/run/media/") + user);
+            if (!d.exists()) return out;
+            for (const QFileInfo &fi : d.entryInfoList(
+                     QDir::AllDirs | QDir::NoDotAndDotDot, QDir::Name))
+                out.append({fi.fileName(), fi.fileName()});
+        }
+        return out;
     }
 
     int libraryRowCount(const QString &parent) const override {
@@ -4119,6 +4173,9 @@ int main(int argc, char *argv[]) {
   // non-main root disables subwindow toggles: one container per
   // process, which is how each browser iframe hosts a single window.
   QString rootContainerArg = takeStringArg(argc, argv, "--container");
+  // --fakehost: render against the deterministic scripted host — the
+  // frontend gates itself without any player (Wasabi 2 V2 harness).
+  const bool fakeHostMode = takeFlag(argc, argv, "--fakehost");
 #ifdef QTAMP_REMOTE_ONLY
   // The remote-only browser head is configured by its embedding page:
   //   /player/?window=player|pledit&graphql=/api/music/graphql
@@ -4325,7 +4382,9 @@ int main(int argc, char *argv[]) {
     // Everything below this block depends only on the PlayerHost base.
     PlayerHost *host = nullptr;
     PlaylistWindow *modernPl = nullptr;
-    if (!connectUrl.isEmpty()) {
+    if (fakeHostMode) {
+        host = new FakeHost();
+    } else if (!connectUrl.isEmpty()) {
         qtamp::RemoteTransport *transport = makeRemoteTransport(connectUrl);
         host = new qtamp::RemoteHost(QUrl(connectUrl), transport);
         fprintf(stderr, "qtamp: remote head connected to %s\n",
