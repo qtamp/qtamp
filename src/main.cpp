@@ -1346,92 +1346,11 @@ public:
     // rewire the MilkDrop overlay against the new widget tree.
     void skinDocumentChanged() override { wireMilkdrop(); }
 
-    // Old-document resources: open subwindows belong to the previous
-    // skin doc and must not survive a reload.
-    void aboutToReloadSkin() override {
-        for (auto *w : std::as_const(m_subwindows)) if (w) w->deleteLater();
-        m_subwindows.clear();
-    }
-
-    // Toggle a secondary container window (EQ / Playlist / etc.).
-    // Creates the SkinView lazily on first call.  Layout id matches
-    // the skin XML convention — modern skins almost always use
-    // "normal" as the default layout name.
-    void toggleSubwindow(const QString &containerRef) {
-        if (!isMainRoot()) return;
-        // `containerRef` is the skin's TOGGLE param — either a literal
-        // container id, a component GUID, or one of Winamp's short
-        // component aliases (`pl`, `ml`, `vid`, `vis`, …).  Resolve it
-        // to the actual <container id="…"> via the engine so e.g.
-        // `guid:pl` opens <container id="Pledit"> and `guid:ml` opens
-        // <container id="MLibrary"> (Winamp Modern names its windows by
-        // component GUID, not by the `pl`/`ml` strings the buttons fire).
-        QString containerId =
-            qtWasabi::SkinXml::resolveContainerId(m_doc, containerRef);
-        if (containerId.isEmpty()) {
-            // Fall back to the raw reference so a direct-id skin (or a
-            // future container we don't alias) still gets a chance, and
-            // the load() failure path below logs a useful message.
-            containerId = containerRef;
-        }
-        qtWasabi::SkinView *slot = ensureSubwindow(containerRef);
-        if (!slot) return;
-        if (slot->isVisible()) slot->hide();
-        else                   slot->show();
-    }
-
-    // Lazily create + load a container's SkinView WITHOUT changing its
-    // visibility (toggleSubwindow owns show/hide).  Returns the slot, or
-    // nullptr if the container failed to load.  Also used by the offscreen
-    // `--screenshot-container` capture path so a container window (e.g. the
-    // Playlist Editor) can be rendered and grabbed without a compositor.
-    qtWasabi::SkinView *ensureSubwindow(const QString &containerRef) {
-        // A single-container head renders exactly one window; TOGGLE
-        // actions and Maki showWindow must not spawn siblings there.
-        if (!isMainRoot()) return nullptr;
-        QString containerId =
-            qtWasabi::SkinXml::resolveContainerId(m_doc, containerRef);
-        if (containerId.isEmpty()) containerId = containerRef;
-        qtWasabi::SkinView *&slot = m_subwindows[containerId.toLower()];
-        if (!slot) {
-            slot = new qtWasabi::SkinView();
-            const QString hostTitle = window() ? window()->title() : QString();
-            slot->setWindowTitle(
-                "Qtamp — " + QFileInfo(hostTitle.mid(8)).fileName()
-                + " · " + containerId);
-            slot->setWindowFlags(slot->windowFlags() | Qt::FramelessWindowHint);
-            slot->setAttribute(Qt::WA_TranslucentBackground);
-            slot->setHost(m_host);
-            QString err;
-            if (!slot->load(m_doc, containerId, QStringLiteral("normal"),
-                            &err)) {
-                fprintf(stderr,
-                    "[qtamp] failed to open container %s: %s\n",
-                    containerId.toLocal8Bit().constData(),
-                    err.toLocal8Bit().constData());
-                slot->deleteLater();
-                slot = nullptr;
-                return nullptr;
-            }
-            // Tint the subwindow's chrome with the SAME active colour theme as
-            // the main window — otherwise its titlebar/frame greyscale bitmaps
-            // render untinted (the Winamp Modern titlebar gradient is a tinted
-            // base, so no active gammaset = a blank/transparent titlebar).
-            if (const qtWasabi::Gammaset *g = gammasets().active())
-                slot->setActiveGammaset(g->name);
-            slot->resize(slot->layoutNativeSize());
-        }
-        return slot;
-    }
-
-    // Like ensureSubwindow but never creates — for visibility queries
-    // (Maki isNamedWindowVisible at script init must not instantiate
-    // every queried window).
-    qtWasabi::SkinView *peekSubwindow(const QString &containerRef) const {
-        QString containerId =
-            qtWasabi::SkinXml::resolveContainerId(m_doc, containerRef);
-        if (containerId.isEmpty()) containerId = containerRef;
-        return m_subwindows.value(containerId.toLower(), nullptr);
+    // Subwindow titles carry the qtamp brand + skin name.
+    QString subwindowTitle(const QString &containerId) const override {
+        const QString hostTitle = window() ? window()->title() : QString();
+        return "Qtamp — " + QFileInfo(hostTitle.mid(8)).fileName()
+               + " · " + containerId;
     }
 
     // Perform a widget's `action=` exactly as a real click would.  The engine
@@ -3400,7 +3319,6 @@ public:
     // Id of m_activeWidget, captured when it's set, so a press→rebuild→release
     // sequence can tell a live widget from a freed one without dereferencing.
     QString           m_activeWidgetId;
-    QHash<QString, qtWasabi::SkinView *> m_subwindows;
     bool m_drawerOpen = true;
     // Previous player transport state — lets the playbackStateChanged
     // handler tell a fresh start (onPlay) from un-pausing (onResume).
