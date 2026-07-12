@@ -29,19 +29,16 @@ BPID=""; PPID2=""
 trap 'kill $BPID $PPID2 2>/dev/null; rm -rf "$tmp"; rm -f "$SOCK"' EXIT
 
 # 1) the player (audio owner)
-QT_QPA_PLATFORM=offscreen "$QTAMP" --backend 0 >"$tmp/bout" 2>"$tmp/berr" &
+PSOCK="$tmp/player.sock"
+QT_QPA_PLATFORM=offscreen "$QTAMP" --serve-player "$PSOCK" >"$tmp/bout" 2>"$tmp/berr" &
 BPID=$!
-BPORT=""
-for _ in $(seq 1 100); do
-    BPORT="$(sed -n 's/.*listening on 127.0.0.1:\([0-9]*\).*/\1/p' "$tmp/berr" | head -1)"
-    [ -n "$BPORT" ] && break; sleep 0.1
-done
-[ -n "$BPORT" ] || { echo "backend never came up"; exit 1; }
-echo "player :$BPORT"
+for _ in $(seq 1 100); do [ -S "$PSOCK" ] && break; sleep 0.1; done
+[ -S "$PSOCK" ] || { echo "player never came up"; exit 1; }
+echo "player on unix:$PSOCK"
 
 # 2) the canonical pylon (TCP + unix socket)
 ( cd "$PYLON" && PORT=$EPORT PYLON_SOCKET="$SOCK" \
-    QTAMP_BACKEND_URL="http://127.0.0.1:$BPORT" \
+    QTAMP_PLAYER_SOCKET="$PSOCK" \
     PYLON_DISABLE_TELEMETRY=true node .pylon/index.js >"$tmp/pout" 2>&1 ) &
 PPID2=$!
 for _ in $(seq 1 60); do

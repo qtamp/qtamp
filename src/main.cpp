@@ -4131,11 +4131,16 @@ static qtWasabi::remote::RemoteTransport *makeRemoteTransport(QString &connectUr
         connectUrl = QStringLiteral("http://qtwasabi.local");  // placeholder
         return new qtWasabi::remote::GraphQLLocalTransport(path);
     }
-    if (connectUrl.startsWith(QLatin1String("graphql+"))) {
-        connectUrl = connectUrl.mid(int(qstrlen("graphql+")));
-        return new qtWasabi::remote::GraphQLHttpTransport();
+    if (connectUrl.startsWith(QLatin1String("unix://"))) {
+        const QString path = connectUrl.mid(int(qstrlen("unix://")));
+        connectUrl = QStringLiteral("http://qtwasabi.local");  // placeholder
+        return new qtWasabi::remote::GraphQLLocalTransport(path);
     }
-    return new qtWasabi::remote::HttpTransport();
+    // GraphQL is the only head data path; plain http(s):// means the
+    // pylon's GraphQL endpoint (the graphql+ prefix stays accepted).
+    if (connectUrl.startsWith(QLatin1String("graphql+")))
+        connectUrl = connectUrl.mid(int(qstrlen("graphql+")));
+    return new qtWasabi::remote::GraphQLHttpTransport();
 }
 
 int main(int argc, char *argv[]) {

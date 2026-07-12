@@ -24,19 +24,16 @@ BPID=""; PPID_PYLON=""
 trap 'kill $BPID $PPID_PYLON 2>/dev/null; rm -rf "$tmp"' EXIT
 
 # 1) the backend
-QT_QPA_PLATFORM=offscreen "$QTAMP" --backend 0 >"$tmp/bout" 2>"$tmp/berr" &
+PSOCK="$tmp/player.sock"
+QT_QPA_PLATFORM=offscreen "$QTAMP" --serve-player "$PSOCK" >"$tmp/bout" 2>"$tmp/berr" &
 BPID=$!
-BPORT=""
-for _ in $(seq 1 100); do
-    BPORT="$(sed -n 's/.*listening on 127.0.0.1:\([0-9]*\).*/\1/p' "$tmp/berr" | head -1)"
-    [ -n "$BPORT" ] && break; sleep 0.1
-done
-[ -n "$BPORT" ] || { echo "backend never came up"; exit 1; }
-echo "backend on :$BPORT"
+for _ in $(seq 1 100); do [ -S "$PSOCK" ] && break; sleep 0.1; done
+[ -S "$PSOCK" ] || { echo "player never came up"; exit 1; }
+echo "player on unix:$PSOCK"
 
 # 2) the pylon in front of it
 ( cd "$ROOT/deps/qtWasabi/api/pylon" && exec env PORT="$PYLON_PORT" \
-    QTAMP_BACKEND_URL="http://127.0.0.1:$BPORT" \
+    QTAMP_PLAYER_SOCKET="$PSOCK" \
     PYLON_DISABLE_TELEMETRY=true \
     node .pylon/index.js >"$tmp/pout" 2>&1 ) &
 PPID_PYLON=$!
@@ -67,9 +64,9 @@ contains "$PROBE2" "1" "--connect head through the pylon sees the playlist"
 curl -sN "$PBASE/graphql?query=subscription%7BplayerEvents%7Bkind%20transport%7Bpaused%7D%7D%7D" \
     -H 'accept: text/event-stream' >"$tmp/sub" 2>/dev/null &
 SUBPID=$!
-sleep 0.5
-curl -s -X POST "http://127.0.0.1:$BPORT/cmd" -d '{"op":"pause","args":{}}' >/dev/null
-sleep 0.8
+sleep 1.2
+curl -s "$PBASE/graphql" -H 'content-type: application/json' -d '{"query":"mutation{pause{ok}}"}' >/dev/null
+sleep 1.5
 kill $SUBPID 2>/dev/null
 contains "$(cat "$tmp/sub")" '"paused":true' "playerEvents subscription pushed the pause"
 
