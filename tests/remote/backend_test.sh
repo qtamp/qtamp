@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Integration test for `qtamp --backend`: drives the loopback control
-# channel (pylon/PROTOCOL.md) with curl and asserts the state shape, the
+# channel (docs/PROTOCOL.md) with curl and asserts the state shape, the
 # command surface, and that mutations push SSE events.
 #
 # Offscreen, no audio device required: the assertions are about state and

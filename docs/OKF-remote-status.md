@@ -37,7 +37,7 @@ RemoteHost cache, revision-checked `applyEvent` (stale events dropped, revision
 gaps and epoch changes demand a resync), and the `PositionClock` (position
 interpolated from the last transport event, anchored at local receipt time, with
 a snap threshold for seeks and a monotonic floor). `src/ssereader.{h,cpp}` is an
-incremental, byte-split-safe SSE parser. `pylon/PROTOCOL.md` is the wire
+incremental, byte-split-safe SSE parser. `docs/PROTOCOL.md` is the wire
 contract. Unit tests `remotestate` and `ssereader` pass (round trips, event
 ordering, epoch resync, interpolation policy, SSE corpus re-fed at every chunk
 size).

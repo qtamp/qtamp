@@ -1,6 +1,6 @@
 // BackendServer — the loopback control channel of `qtamp --backend`.
 // Exposes the running player (a local QtampHost + its playlist model,
-// audio and all) over the HTTP+SSE protocol in pylon/PROTOCOL.md so a
+// audio and all) over the HTTP+SSE protocol in docs/PROTOCOL.md so a
 // pylon can fan it out as GraphQL and RemoteHost heads can sync to it.
 //
 // Works against the PlayerHost surface plus a few hooks for the pieces

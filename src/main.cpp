@@ -4157,12 +4157,12 @@ int main(int argc, char *argv[]) {
   // compatibility but is a no-op.
   (void)takeFlag(argc, argv, "--qml-renderer");
   // --backend <port>: run the headless networked-player backend (audio +
-  // playlist + the loopback control channel of pylon/PROTOCOL.md) with no
+  // playlist + the loopback control channel of docs/PROTOCOL.md) with no
   // skin and no windows.  See docs/OKF-remote.md.  Port 0 = ephemeral.
   const QString backendPortArg = takeStringArg(argc, argv, "--backend");
   const bool backendMode = !backendPortArg.isEmpty();
   // --connect <url>: run the normal player UI but backed by a RemoteHost
-  // synced to a networked backend at <url> (the pylon/PROTOCOL.md root).
+  // synced to a networked backend at <url> (the docs/PROTOCOL.md root).
   QString connectUrl = takeStringArg(argc, argv, "--connect");
   // --probe <field>: headless connectivity check (tests). Connect a
   // RemoteHost to --connect, wait for the first snapshot, print one

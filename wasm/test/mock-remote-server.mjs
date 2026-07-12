@@ -1,6 +1,6 @@
 // One-origin test server for the WASM remote head: serves the built
 // dist (index.html, qtamp.js/.wasm, qtloader.js) AND a scripted
-// pylon/PROTOCOL.md mock backend (/state, /events SSE, /cmd) — so the
+// docs/PROTOCOL.md mock backend (/state, /events SSE, /cmd) — so the
 // head can be pointed at `?graphql=/` with no CORS in the picture.
 // COOP/COEP headers ride on every response (Qt wasm's verified-serving
 // setup).  Import { startMockRemoteServer } from tests, or run

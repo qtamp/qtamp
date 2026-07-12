@@ -1,5 +1,12 @@
 # qtamp backend control-channel protocol
 
+> **Legacy.** This channel is pylon-internal since Wasabi 2 V1: consumers
+> speak GraphQL (`deps/qtWasabi/api/schema.graphql`), players implement
+> the gRPC player protocol (`deps/qtWasabi/api/player.proto`). It dies
+> with the hand-rolled backendserver in V4; this document is deleted at
+> V9. The C++ parse/serialize now lives in
+> `deps/qtWasabi/{public/qtWasabi,src}/remote/RemoteState.*`.
+
 The contract between `qtamp --backend <port>` (the headless player that owns
 audio, files and the playlist) and its consumers — primarily the qtamp-pylon,
 which fans it out as GraphQL, and the test mocks, which implement this same
