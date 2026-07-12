@@ -105,7 +105,6 @@ endif()
 set(QTAMP_SOURCES
     src/main.cpp
     src/playerhost.h
-    src/backendserver.cpp
     src/audiometa.cpp
     src/medialibraryindex.cpp
     src/eq10dsp.cpp
@@ -257,6 +256,11 @@ if(QTAMP_USE_QTWASABI)
     # The remote client family + FakeHost (qtWasabi::remote, V3).
     if(TARGET qtwasabi_remote)
         target_link_libraries(qtamp PRIVATE qtwasabi_remote)
+    endif()
+    # The player-protocol sidecar (qtWasabi::serve, V4; needs grpc++).
+    if(TARGET qtwasabi_serve)
+        target_link_libraries(qtamp PRIVATE qtwasabi_serve)
+        target_compile_definitions(qtamp PRIVATE QTAMP_HAVE_SIDECAR)
     endif()
 endif()
 

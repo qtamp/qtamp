@@ -37,7 +37,9 @@
 #include "medialibraryindex.h"
 #include "playlistwindow.h"
 #include "playerhost.h"
-#include "backendserver.h"
+#ifdef QTAMP_HAVE_SIDECAR
+#include <qtWasabi/serve/SidecarService.h>
+#endif
 #include <qtWasabi/remote/RemoteHost.h>
 #include <qtWasabi/remote/RemoteTransport.h>
 #include <qtWasabi/remote/GraphQLTransport.h>
@@ -4162,11 +4164,12 @@ int main(int argc, char *argv[]) {
   // is now primary; the flag is silently accepted for backwards
   // compatibility but is a no-op.
   (void)takeFlag(argc, argv, "--qml-renderer");
-  // --backend <port>: run the headless networked-player backend (audio +
-  // playlist + the loopback control channel of docs/PROTOCOL.md) with no
-  // skin and no windows.  See docs/OKF-remote.md.  Port 0 = ephemeral.
-  const QString backendPortArg = takeStringArg(argc, argv, "--backend");
-  const bool backendMode = !backendPortArg.isEmpty();
+  // --serve-player <socketPath>: run the headless player (audio +
+  // playlist) serving the Wasabi 2 player protocol (api/player.proto,
+  // gRPC) on a unix socket, with no skin and no windows.  The
+  // framework's pylon pairs with it as the GraphQL server.
+  const QString servePlayerArg = takeStringArg(argc, argv, "--serve-player");
+  const bool backendMode = !servePlayerArg.isEmpty();
   // --connect <url>: run the normal player UI but backed by a RemoteHost
   // synced to a networked backend at <url> (the docs/PROTOCOL.md root).
   QString connectUrl = takeStringArg(argc, argv, "--connect");
@@ -4309,7 +4312,8 @@ int main(int argc, char *argv[]) {
           if (QFileInfo(a).isFile()) pl->addTrack(a);
       }
 
-      qtamp::BackendServer::Hooks hooks;
+#ifdef QTAMP_HAVE_SIDECAR
+      qtWasabi::serve::ServeHooks hooks;
       hooks.playlistClear = [pl]() { pl->clearPlaylist(); };
       hooks.playlistRemoveRows = [pl](const QList<int> &rows) {
           pl->removeRows(rows);
@@ -4319,16 +4323,25 @@ int main(int argc, char *argv[]) {
       hooks.eqAuto = [host]() { return host->eqAuto(); };
       hooks.setEqAuto = [host](bool on) { host->setEqAuto(on); };
       hooks.musicRoot = musicRoot;
+      hooks.playerName = QStringLiteral("qtamp-player ") +
+                         QCoreApplication::applicationVersion();
 
-      auto *server = new qtamp::BackendServer(host, std::move(hooks), &app);
-      bool okPort = false;
-      const quint16 port = quint16(backendPortArg.toUInt(&okPort));
-      if (!okPort || !server->listen(port)) {
-          fprintf(stderr, "qtamp: --backend: cannot listen on %s\n",
-                  backendPortArg.toLocal8Bit().constData());
+      auto *sidecar =
+          new qtWasabi::serve::SidecarService(host, std::move(hooks));
+      if (!sidecar->listen(servePlayerArg)) {
+          fprintf(stderr, "qtamp: --serve-player: cannot bind %s\n",
+                  servePlayerArg.toLocal8Bit().constData());
           return 6;
       }
-      return app.exec();
+      const int rc = app.exec();
+      delete sidecar;
+      return rc;
+#else
+      fprintf(stderr,
+              "qtamp: --serve-player needs the grpc++ build "
+              "(qtwasabi_serve target)\n");
+      return 6;
+#endif
   }
 
   // Resolve skin path + renderer kind.  CLI flags win; then saved
