@@ -1,63 +1,13 @@
 # qtamp unit tests. Framework-free: each test is a small executable that
 # returns non-zero on failure, registered with CTest. Run with `ctest` in
 # the build dir, or the aggregate `qtamp_tests` target.
+# (The remote-family and FakeHost tests live in deps/qtWasabi/tests.)
 
 # Pure-logic units that carry no Qt dependency build and run everywhere,
 # including as part of the WebAssembly toolchain image's smoke pass.
 add_executable(wavreader_test wavreader_test.cpp)
 target_include_directories(wavreader_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME wavreader COMMAND wavreader_test)
-
-# Networked-player protocol core (docs/OKF-remote.md): pure logic over
-# Qt Core, no network, no GUI.
-add_executable(remotestate_test remotestate_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/remotestate.cpp)
-target_include_directories(remotestate_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(remotestate_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
-add_test(NAME remotestate COMMAND remotestate_test)
-
-add_executable(ssereader_test ssereader_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ssereader.cpp)
-target_include_directories(ssereader_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(ssereader_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
-add_test(NAME ssereader COMMAND ssereader_test)
-
-# RemoteHost against an injected transport (no network). It backs a
-# PlayerHost (qtWasabi::Host subclass), so it needs the qtWasabi library;
-# built only when qtamp itself links it. Gui for the QObject/signal
-# machinery; runs offscreen.
-if(TARGET qtwasabi_static)
-    add_executable(remotehost_test remotehost_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/playerhost.h
-        ${CMAKE_SOURCE_DIR}/src/remotehost.cpp
-        ${CMAKE_SOURCE_DIR}/src/remotetransport.cpp
-        ${CMAKE_SOURCE_DIR}/src/remotestate.cpp
-        ${CMAKE_SOURCE_DIR}/src/ssereader.cpp)
-    target_include_directories(remotehost_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    target_link_libraries(remotehost_test PRIVATE
-        qtwasabi_static
-        Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui
-        Qt${QT_VERSION_MAJOR}::Network)
-    add_test(NAME remotehost COMMAND remotehost_test)
-    set_tests_properties(remotehost PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-endif()
-
-# FakeHost: the deterministic scripted host behind `--fakehost`
-# (Wasabi 2 V2). Same qtwasabi_static gate as remotehost_test: FakeHost
-# derives PlayerHost, which is a qtWasabi::Host.
-if(TARGET qtwasabi_static)
-    add_executable(fakehost_test fakehost_test.cpp
-        ${CMAKE_SOURCE_DIR}/src/playerhost.h
-        ${CMAKE_SOURCE_DIR}/src/fakehost.h)
-    target_include_directories(fakehost_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-    target_link_libraries(fakehost_test PRIVATE
-        qtwasabi_static
-        Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui)
-    add_test(NAME fakehost COMMAND fakehost_test)
-    set_tests_properties(fakehost PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-endif()
 
 # Backend-mode integration test: drives `qtamp --backend` over HTTP with
 # curl. Requires the built qtamp binary; skipped implicitly if curl is
@@ -74,4 +24,4 @@ add_test(NAME sync
 
 add_custom_target(qtamp_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS wavreader_test remotestate_test ssereader_test qtamp)
+    DEPENDS wavreader_test qtamp)

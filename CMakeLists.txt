@@ -105,13 +105,7 @@ endif()
 set(QTAMP_SOURCES
     src/main.cpp
     src/playerhost.h
-    src/fakehost.h
-    src/remotestate.cpp
-    src/ssereader.cpp
     src/backendserver.cpp
-    src/remotetransport.cpp
-    src/graphqltransport.cpp
-    src/remotehost.cpp
     src/audiometa.cpp
     src/medialibraryindex.cpp
     src/eq10dsp.cpp
@@ -259,6 +253,10 @@ if(QTAMP_USE_QTWASABI)
                 break()
             endif()
         endforeach()
+    endif()
+    # The remote client family + FakeHost (qtWasabi::remote, V3).
+    if(TARGET qtwasabi_remote)
+        target_link_libraries(qtamp PRIVATE qtwasabi_remote)
     endif()
 endif()
 

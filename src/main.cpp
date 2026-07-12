@@ -38,10 +38,10 @@
 #include "playlistwindow.h"
 #include "playerhost.h"
 #include "backendserver.h"
-#include "remotehost.h"
-#include "remotetransport.h"
-#include "graphqltransport.h"
-#include "fakehost.h"
+#include <qtWasabi/remote/RemoteHost.h>
+#include <qtWasabi/remote/RemoteTransport.h>
+#include <qtWasabi/remote/GraphQLTransport.h>
+#include <qtWasabi/FakeHost.h>
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -1548,7 +1548,7 @@ public:
         return false;
     }
 
-    explicit QtampPlayerWindow(PlayerHost *host, QQuickItem *parent = nullptr)
+    explicit QtampPlayerWindow(qtWasabi::PlayerHost *host, QQuickItem *parent = nullptr)
         : qtWasabi::SkinQuickItem(parent), m_host(host) {
         // QQuickItem is hosted by a QQuickView; the view sets
         // FramelessWindowHint + transparent color itself (main()
@@ -2576,7 +2576,7 @@ public:
         // Pipe the host's real track metadata into the skin's Maki
         // file-info scripts.  Keys are lower-case: "playitem:string",
         // "playitem:displaytitle", "decoder", "meta:<field>".
-        PlayerHost *h = m_host;
+        qtWasabi::PlayerHost *h = m_host;
         r->setPlayItemMetadataResolver(
             [h](const QString &key) -> QString {
                 if (key == QLatin1String("playitem:string"))       return h->songPath();
@@ -3523,9 +3523,11 @@ public:
         // placeholder pointer above; the per-tick syncMilkdropOverlay
         // hides the item when the placeholder is null, and the item
         // stays alive across skin reloads.
-        if (m_milkdropPlaceholder && !m_milkdropItem && m_host->analyzerPtr()) {
+        auto *localHost = dynamic_cast<PlayerHost *>(m_host);
+        if (m_milkdropPlaceholder && !m_milkdropItem && localHost &&
+            localHost->analyzerPtr()) {
             m_milkdropItem = new MilkdropItem(this);
-            m_milkdropItem->setAnalyzer(m_host->analyzerPtr());
+            m_milkdropItem->setAnalyzer(localHost->analyzerPtr());
             m_milkdropItem->setVisible(false);  // until first sync
             // Stack above chrome so the GL surface isn't masked.
             m_milkdropItem->setZ(1000.0);
@@ -3923,7 +3925,7 @@ public:
         walk(mut);
     }
 
-    PlayerHost *m_host = nullptr;
+    qtWasabi::PlayerHost *m_host = nullptr;
     QPoint     m_dragOrigin;
     bool       m_dragging = false;
     // Script receiver whose onLeftButtonDown claimed the press —
@@ -4114,18 +4116,18 @@ namespace qtWasabi { void installPleditHostFactory(); }
 //   graphql+https://host/...  GraphQL over TLS/edge
 //   graphql+unix:///path.sock GraphQL over a local unix socket
 // plain http(s):// stays the legacy control channel during migration.
-static qtamp::RemoteTransport *makeRemoteTransport(QString &connectUrl) {
+static qtWasabi::remote::RemoteTransport *makeRemoteTransport(QString &connectUrl) {
     if (connectUrl.startsWith(QLatin1String("graphql+unix://"))) {
         const QString path =
             connectUrl.mid(int(qstrlen("graphql+unix://")));
         connectUrl = QStringLiteral("http://qtwasabi.local");  // placeholder
-        return new qtamp::GraphQLLocalTransport(path);
+        return new qtWasabi::remote::GraphQLLocalTransport(path);
     }
     if (connectUrl.startsWith(QLatin1String("graphql+"))) {
         connectUrl = connectUrl.mid(int(qstrlen("graphql+")));
-        return new qtamp::GraphQLHttpTransport();
+        return new qtWasabi::remote::GraphQLHttpTransport();
     }
-    return new qtamp::HttpTransport();
+    return new qtWasabi::remote::HttpTransport();
 }
 
 int main(int argc, char *argv[]) {
@@ -4243,8 +4245,8 @@ int main(int argc, char *argv[]) {
   if (!probeField.isEmpty() && !connectUrl.isEmpty()) {
       // Headless probe: connect, wait for the first snapshot, print the
       // requested field, exit. Used by tests/remote/sync_test.sh.
-      qtamp::RemoteTransport *transport = makeRemoteTransport(connectUrl);
-      auto *host = new qtamp::RemoteHost(QUrl(connectUrl), transport);
+      qtWasabi::remote::RemoteTransport *transport = makeRemoteTransport(connectUrl);
+      auto *host = new qtWasabi::remote::RemoteHost(QUrl(connectUrl), transport);
       auto printAndExit = [host, probeField]() {
           QString out;
           if (probeField == QLatin1String("playing"))
@@ -4380,13 +4382,13 @@ int main(int argc, char *argv[]) {
     // The host factory: local (the full audio pipeline + playlist model)
     // or remote (a RemoteHost synced to a networked backend, --connect).
     // Everything below this block depends only on the PlayerHost base.
-    PlayerHost *host = nullptr;
+    qtWasabi::PlayerHost *host = nullptr;
     PlaylistWindow *modernPl = nullptr;
     if (fakeHostMode) {
-        host = new FakeHost();
+        host = new qtWasabi::FakeHost();
     } else if (!connectUrl.isEmpty()) {
-        qtamp::RemoteTransport *transport = makeRemoteTransport(connectUrl);
-        host = new qtamp::RemoteHost(QUrl(connectUrl), transport);
+        qtWasabi::remote::RemoteTransport *transport = makeRemoteTransport(connectUrl);
+        host = new qtWasabi::remote::RemoteHost(QUrl(connectUrl), transport);
         fprintf(stderr, "qtamp: remote head connected to %s\n",
                 connectUrl.toLocal8Bit().constData());
     } else {
@@ -4504,7 +4506,8 @@ int main(int argc, char *argv[]) {
         qwin->setFormat(fmt);
     }
     qwin->setColor(QColor(0, 0, 0, 0));
-    host->bindWindow(view);
+    if (auto *localHost = dynamic_cast<PlayerHost *>(host))
+        localHost->bindWindow(view);
 
     // Drive the chrome.  Two paths:
     //  1) Apply the static well-known-script equivalents

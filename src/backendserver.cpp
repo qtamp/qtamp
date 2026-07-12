@@ -11,7 +11,7 @@
 #include <QTimer>
 #include <QUuid>
 
-#include "playerhost.h"
+#include <qtWasabi/PlayerHost.h>
 
 namespace qtamp {
 

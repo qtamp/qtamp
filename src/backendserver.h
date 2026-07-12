@@ -14,13 +14,16 @@
 
 #include <functional>
 
-#include "remotestate.h"
+#include <qtWasabi/remote/RemoteState.h>
 
 class QTcpServer;
 class QTcpSocket;
-class PlayerHost;
+namespace qtWasabi { class PlayerHost; }
 
 namespace qtamp {
+
+using namespace qtWasabi::remote;
+using qtWasabi::PlayerHost;
 
 class BackendServer : public QObject {
     Q_OBJECT
