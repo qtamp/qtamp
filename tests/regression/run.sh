@@ -64,7 +64,11 @@ for skin in "${SKINS[@]}"; do
     # must not leak into baselines — a stored synthetic theme once
     # masqueraded as an engine-wide color regression.  SKIN_DIR was
     # expanded above, so skins still come from the real location.
-    HOME="$TMPDIR" QT_QPA_PLATFORM=offscreen "$QTAMP" \
+    # FAKEHOST=1 renders against the deterministic scripted host —
+    # byte-identical to the QtampHost idle state (Wasabi 2 V2 gate).
+    EXTRA_ARGS=()
+    if [[ "${FAKEHOST:-0}" == "1" ]]; then EXTRA_ARGS+=(--fakehost); fi
+    HOME="$TMPDIR" QT_QPA_PLATFORM=offscreen "$QTAMP" "${EXTRA_ARGS[@]}" \
         --modern-skin "$SKIN_DIR/$skin" \
         --screenshot "$rendered" >"$TMPDIR/${slug}.log" 2>&1 || true
 

@@ -43,6 +43,22 @@ if(TARGET qtwasabi_static)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
+# FakeHost: the deterministic scripted host behind `--fakehost`
+# (Wasabi 2 V2). Same qtwasabi_static gate as remotehost_test: FakeHost
+# derives PlayerHost, which is a qtWasabi::Host.
+if(TARGET qtwasabi_static)
+    add_executable(fakehost_test fakehost_test.cpp
+        ${CMAKE_SOURCE_DIR}/src/playerhost.h
+        ${CMAKE_SOURCE_DIR}/src/fakehost.h)
+    target_include_directories(fakehost_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(fakehost_test PRIVATE
+        qtwasabi_static
+        Qt${QT_VERSION_MAJOR}::Core Qt${QT_VERSION_MAJOR}::Gui)
+    add_test(NAME fakehost COMMAND fakehost_test)
+    set_tests_properties(fakehost PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 # Backend-mode integration test: drives `qtamp --backend` over HTTP with
 # curl. Requires the built qtamp binary; skipped implicitly if curl is
 # absent (the script fails loudly, which CTest reports).
