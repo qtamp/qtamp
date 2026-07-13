@@ -1,6 +1,10 @@
 #include <cstdio>
 #include <memory>
 #include <QApplication>
+#include <QElapsedTimer>
+#include <QJsonArray>
+#include <QLockFile>
+#include <QThread>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDialog>
@@ -49,6 +53,7 @@
 #include <qtWasabi/head/HeadPreferences.h>
 #include <qtWasabi/head/HeadTransport.h>
 #include <qtWasabi/head/HeadWiring.h>
+#include <qtWasabi/head/Orchestrator.h>
 #include "skinutils.h"
 #include "translator.h"
 #include "winampbitmaps.h"
@@ -2197,6 +2202,15 @@ int main(int argc, char *argv[]) {
   // --fakehost: render against the deterministic scripted host — the
   // frontend gates itself without any player (Wasabi 2 V2 harness).
   const bool fakeHostMode = takeFlag(argc, argv, "--fakehost");
+  // Orchestrated mode (V6): the launcher spawns player + pylon on
+  // per-instance unix sockets and the head connects over graphql+unix.
+  // DEFAULT for interactive runs; --embedded restores the in-process
+  // player, --orchestrated forces the trio even for --screenshot runs
+  // (the live-stack pixel gate).  Headless test lanes (--fakehost,
+  // --connect, --serve-player, --screenshot, --probe, --list-actions)
+  // keep their explicit modes.
+  const bool embeddedFlag = takeFlag(argc, argv, "--embedded");
+  const bool orchestratedFlag = takeFlag(argc, argv, "--orchestrated");
 #ifdef QTAMP_REMOTE_ONLY
   // The remote-only browser head is configured by its embedding page:
   //   /player/?window=player|pledit&graphql=/api/music/graphql
@@ -2413,11 +2427,135 @@ int main(int argc, char *argv[]) {
     // Everything below this block depends only on the PlayerHost base.
     qtWasabi::PlayerHost *host = nullptr;
     PlaylistWindow *modernPl = nullptr;
+    qtWasabi::head::Orchestrator *orchestrator = nullptr;
+    const bool wantOrchestrated =
+        orchestratedFlag ||
+        (!embeddedFlag && !fakeHostMode && connectUrl.isEmpty() &&
+         screenshotPath.isEmpty() && !listActions && probeField.isEmpty());
+    if (wantOrchestrated && connectUrl.isEmpty()) {
+        // Single instance: a second `qtamp file.mp3` finds the running
+        // trio and enqueues instead of spawning another.
+        const QString lockDir =
+            qEnvironmentVariable("XDG_RUNTIME_DIR", QDir::tempPath()) +
+            QStringLiteral("/qtwasabi");
+        QDir().mkpath(lockDir);
+        static QLockFile instanceLock(
+            lockDir + QStringLiteral("/qtamp-single.lock"));
+        instanceLock.setStaleLockTime(0);
+        if (!instanceLock.tryLock(100)) {
+            const QString gsockFile =
+                lockDir + QStringLiteral("/qtamp-single.gsock");
+            // The running instance writes the gsock file just after
+            // its trio comes up; a follow-up launched in that window
+            // retries briefly rather than silently dropping the files.
+            QString gsock;
+            {
+                QElapsedTimer tm;
+                tm.start();
+                while (gsock.isEmpty() && tm.elapsed() < 3000) {
+                    QFile f(gsockFile);
+                    if (f.open(QIODevice::ReadOnly))
+                        gsock = QString::fromUtf8(f.readAll()).trimmed();
+                    if (gsock.isEmpty())
+                        QThread::msleep(50);
+                }
+            }
+            if (!gsock.isEmpty()) {
+                QStringList paths;
+                for (int i = 1; i < argc; ++i) {
+                    const QString a = QString::fromLocal8Bit(argv[i]);
+                    if (!a.startsWith(QLatin1Char('-')) &&
+                        QFileInfo(a).isFile())
+                        paths << QFileInfo(a).absoluteFilePath();
+                }
+                if (!paths.isEmpty() && !gsock.isEmpty()) {
+                    auto *t =
+                        new qtWasabi::remote::GraphQLLocalTransport(gsock);
+                    QJsonArray arr;
+                    for (const QString &pth : std::as_const(paths))
+                        arr.append(pth);
+                    bool done = false;
+                    t->postJson(
+                        QUrl(QStringLiteral("http://local/cmd")),
+                        {{QStringLiteral("op"),
+                          QStringLiteral("playlistAddPaths")},
+                         {QStringLiteral("args"),
+                          QJsonObject{
+                              {QStringLiteral("paths"), arr}}}},
+                        [&done](bool, QJsonObject) { done = true; });
+                    QElapsedTimer tm;
+                    tm.start();
+                    while (!done && tm.elapsed() < 3000)
+                        QCoreApplication::processEvents(
+                            QEventLoop::AllEvents, 50);
+                    fprintf(stderr,
+                            "qtamp: enqueued %d file(s) on the running "
+                            "instance\n",
+                            int(paths.size()));
+                }
+            }
+            return 0;
+        }
+        orchestrator = new qtWasabi::head::Orchestrator(&app);
+        orchestrator->setPlayerCommand(
+            QCoreApplication::applicationFilePath(),
+            {QStringLiteral("--serve-player")});
+        // Trusted-local musicRoot policy: the LOCAL user launched this
+        // trio — the player accepts any local path the head hands it
+        // (CLI args, EJECT dialog, folder enqueue, removable media).
+        // Remote-exposed players confine to a real music root instead.
+        orchestrator->setPlayerEnv(QStringLiteral("QTAMP_MUSIC_ROOT"),
+                                   QStringLiteral("/"));
+        // Startup failure (no pylon build, node missing, player won't
+        // bind) is NOT fatal while the embedded path still exists
+        // (V6 step 1): tear the half-trio down and fall back to the
+        // in-process player so a user without node still gets audio.
+        // --orchestrated FORCES the trio (the live-stack gate) and
+        // exits on failure instead of masking a broken stack.
+        if (!orchestrator->start()) {
+            orchestrator->stop();
+            orchestrator->deleteLater();
+            orchestrator = nullptr;
+            instanceLock.unlock();
+            if (orchestratedFlag) {
+                fprintf(stderr,
+                        "qtamp: --orchestrated: trio failed to start\n");
+                return 7;
+            }
+            fprintf(stderr,
+                    "qtamp: orchestration unavailable — embedded "
+                    "player\n");
+        } else {
+            // Runtime failure after a good start (the player dies mid-
+            // session) IS fatal — audio is gone, nothing to fall back
+            // to.
+            QObject::connect(
+                orchestrator, &qtWasabi::head::Orchestrator::failed,
+                &app, [](const QString &why) {
+                    fprintf(stderr, "qtamp: orchestration lost: %s\n",
+                            why.toLocal8Bit().constData());
+                    QCoreApplication::exit(7);
+                });
+            connectUrl = QStringLiteral("graphql+unix://") +
+                         orchestrator->graphqlSocket();
+            // Publish the GraphQL socket for follow-up instances.
+            QFile gf(lockDir + QStringLiteral("/qtamp-single.gsock"));
+            if (gf.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                gf.write(orchestrator->graphqlSocket().toUtf8());
+            fprintf(stderr, "qtamp: orchestrated trio up (%s)\n",
+                    orchestrator->graphqlSocket()
+                        .toLocal8Bit()
+                        .constData());
+        }
+    }
     if (fakeHostMode) {
         host = new qtWasabi::FakeHost();
     } else if (!connectUrl.isEmpty()) {
         qtWasabi::remote::RemoteTransport *transport = makeRemoteTransport(connectUrl);
         host = new qtWasabi::remote::RemoteHost(QUrl(connectUrl), transport);
+        if (orchestrator)
+            static_cast<qtWasabi::remote::RemoteHost *>(host)
+                ->setLocalCompanion(true);
         fprintf(stderr, "qtamp: remote head connected to %s\n",
                 connectUrl.toLocal8Bit().constData());
     } else {
@@ -2817,10 +2955,22 @@ int main(int argc, char *argv[]) {
           modernCliFiles << QStringLiteral(":/demo.wav");
 #endif
     }
-    // A remote head has no local playlist model or file access; the
-    // backend owns the playlist, so CLI media is ignored (with a note).
-    if (!modernPl && (!modernCliFiles.isEmpty() ||
-                      ::getenv("WASABIQT_PLAY_FILE"))) {
+    // Orchestrated (companion) head: no local playlist model, but the
+    // LOCAL player accepts local paths — seed CLI media through the
+    // companion RemoteHost (first plays, the rest enqueue).
+    if (!modernPl && orchestrator && !modernCliFiles.isEmpty()) {
+      const QStringList files = modernCliFiles;
+      QTimer::singleShot(0, view, [host, files]() {
+        bool first = true;
+        for (const QString &f : files) {
+            host->enqueueAndPlay(QUrl::fromLocalFile(f), !first);
+            first = false;
+        }
+      });
+    } else if (!modernPl && (!modernCliFiles.isEmpty() ||
+                             ::getenv("WASABIQT_PLAY_FILE"))) {
+      // A pure REMOTE head has no local file access — the backend owns
+      // the playlist, so CLI media is ignored (with a note).
       fprintf(stderr,
               "qtamp: --connect: ignoring local media args (the backend "
               "owns the playlist)\n");

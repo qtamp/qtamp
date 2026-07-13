@@ -31,6 +31,14 @@ add_test(NAME bearer_header
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/remote/bearer_header_test.sh
             $<TARGET_FILE_DIR:qtamp>)
 
+# Orchestrated default (V6): the permanent live-stack pixel gate
+# (MAE < 3) plus lifecycle — single-instance enqueue, pylon respawn,
+# trio teardown.  Needs the built pylon + node.
+add_test(NAME orchestrated
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/remote/orchestrated_test.sh
+            $<TARGET_FILE_DIR:qtamp>)
+set_tests_properties(orchestrated PROPERTIES TIMEOUT 180)
+
 add_custom_target(qtamp_tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     DEPENDS wavreader_test qtamp)
